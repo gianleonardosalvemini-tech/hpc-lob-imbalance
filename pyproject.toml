@@ -1,0 +1,32 @@
+# The C engine is not built by pip: run `python scripts/build_engine.py` first.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lobimb"
+version = "1.0.0"
+description = "Order book imbalance research: C/OpenMP batch engine + Python backtesting"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-benchmark>=4"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Benchmarks are slow and machine dependent: opt in with -m bench.
+addopts = "-ra -m 'not bench'"
+markers = [
+    "bench: latency/throughput KPI benchmarks (run with `pytest -m bench`)",
+    "data: needs the real dataset in data/ (skipped when missing)",
+]

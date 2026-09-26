@@ -1,0 +1,34 @@
+# Market data (1+ GB, never commit)
+data/
+*.csv
+*.npy
+*.parquet
+
+# Build outputs
+build/
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.benchmarks/
+.venv/
+venv/
+
+# Generated results
+results/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
