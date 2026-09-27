@@ -85,7 +85,8 @@ def main() -> int:
     legacy_rows = 20_000 if args.quick else 200_000
 
     print("load times ...")
-    k = perf.load_times(CACHE_DIR)  # all scalar KPIs
+    # k collects every scalar KPI (saved to benchmarks.json).
+    k = perf.load_times(CACHE_DIR)
     print("native C floor ...")
     k.update(perf.native_bench(rows=n, calls=stream_calls * 4))
     # Single-thread native run; keep only its batch numbers.
@@ -104,9 +105,9 @@ def main() -> int:
     print("end to end ...")
     k.update(perf.end_to_end(book))
 
-    # Legacy per-row costs extrapolated to the full dataset.
     best = min(scaling, key=lambda r: r["wobi_ns_row"])
     one = scaling[0]
+    # Legacy per-row costs extrapolated to the full dataset.
     legacy_obi_full_s = k["legacy_obi_ns_row"] * n / 1e9
     legacy_wobi_full_s = k["legacy_wobi_ns_row"] * n / 1e9
 
@@ -158,8 +159,9 @@ def main() -> int:
                      f"{r['wobi_efficiency']:.0%} |")
     lines += [
         "",
-        "Scaling flattens early: each snapshot is 320 bytes and the kernels do ~2-6 flops per byte "
-        "loaded, so they are memory-bandwidth bound, not compute bound.",
+        "Scaling flattens early: each snapshot is 320 bytes and the kernels do well under one flop "
+        "per byte loaded (about 0.3 for WOBI, far less for OBI), so they are memory-bandwidth bound, "
+        "not compute bound.",
         "",
         "## 3. Per-snapshot (tick-to-signal) latency",
         "",

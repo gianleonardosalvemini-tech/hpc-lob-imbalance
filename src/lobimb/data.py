@@ -168,7 +168,6 @@ def describe(book: Book, tick: float = 0.1, in_sample_fraction: float = 0.7) -> 
     dt = np.diff(ts)
     bid, ask = np.asarray(book.bid_px()), np.asarray(book.ask_px())
     mid = 0.5 * (bid + ask)
-    # Differences of 0.1-grid prices carry float noise, hence the rounding below.
     spread = ask - bid
     bv, av = np.asarray(book.bid_vol()), np.asarray(book.ask_vol())
     depth_bid = np.zeros(n)
@@ -197,6 +196,7 @@ def describe(book: Book, tick: float = 0.1, in_sample_fraction: float = 0.7) -> 
                      "gaps_gt_2s": int((dt > 2_000).sum())},
         "price": {"mid_min": float(mid.min()), "mid_max": float(mid.max()),
                   "mid_first": float(mid[0]), "mid_last": float(mid[-1])},
+        # 0.1-grid price differences carry float noise: round to 6 dp.
         "spread": {"median": round(float(np.median(spread)), 6),
                    "mean": round(float(spread.mean()), 6),
                    "p99": round(float(np.percentile(spread, 99)), 6),

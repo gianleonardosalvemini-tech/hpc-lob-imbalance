@@ -29,7 +29,6 @@ def levels() -> np.ndarray:
     return make_levels(1_000_000, seed=7)
 
 
-# --- pytest-benchmark: full statistics per component --------------------------------
 
 def test_bench_obi_batch(benchmark, levels):
     benchmark(engine.obi, levels)
@@ -49,7 +48,7 @@ def test_bench_stream_wobi_call(benchmark, levels):
     benchmark(stream.wobi, 12345)
 
 
-# --- KPI budgets ----------------------------------------------------------------------
+# KPI budgets (assertions)
 
 def test_kpi_batch_throughput(levels):
     # Low speedup bar: the kernels are memory-bandwidth bound.

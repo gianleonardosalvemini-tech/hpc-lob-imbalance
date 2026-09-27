@@ -78,7 +78,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     book = data.load(args.cache)
 
-    # --- A. Signal distribution -------------------------------------------------
+    # A. Signal distribution
     obi = signals.obi(book)
     obi_int = reference.legacy_obi_int(np.asarray(book.levels))
     sig = pd.DataFrame({
@@ -94,7 +94,7 @@ def main() -> int:
     plots.price_vs_imbalance(book[:5000], obi[:5000], out / "price_vs_obi.png",
                              title="Mid price vs level-1 OBI (first 5,000 snapshots)")
 
-    # --- B. Legacy methodology --------------------------------------------------
+    # B. Legacy methodology
     # Original study: first 100k rows, zero latency, no fees.
     head = book[:100_000]
     legacy_rows = []
@@ -109,7 +109,7 @@ def main() -> int:
           legacy[["signal", "horizon_s", "slippage", "trades", "win_rate", "ev_net"]]
           .to_string(index=False, float_format="%.3f"))
 
-    # --- C. Corrected methodology -----------------------------------------------
+    # C. Corrected methodology
     # OBI uses only the current snapshot, so computing it on the whole book and
     # slicing leaks nothing across the split.
     cfg_costs = CostModel(fee_bps=0, slippage=0.0, latency_ms=args.latency_ms)

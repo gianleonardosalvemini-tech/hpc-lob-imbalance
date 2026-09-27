@@ -7,7 +7,7 @@
  *   [bid_p0, bid_v0, ..., bid_p9, bid_v9, ask_p0, ask_v0, ..., ask_p9, ask_v9]
  *
  * Level 0 is the best price. Volumes are doubles because BTC trades in
- * fractions (the old engine stored them as int and truncated most levels to 0).
+ * fractions (the v1 engine stored them as int and truncated most levels to 0).
  *
  * `stride` is the distance in doubles between consecutive rows
  * (>= LOB_ROW_WIDTH), so a view of a wider array can be passed as-is.
@@ -38,6 +38,7 @@ extern "C" {
 #  define LOB_API __attribute__((visibility("default")))
 #endif
 
+/* Row layout (mirrored in lobimb/data.py and lobimb/reference.py). */
 #define LOB_DEPTH 10                   /* price levels per side */
 #define LOB_ROW_WIDTH (4 * LOB_DEPTH)  /* 40 doubles per row */
 #define LOB_ASK_OFFSET (2 * LOB_DEPTH) /* first ask column (20) */

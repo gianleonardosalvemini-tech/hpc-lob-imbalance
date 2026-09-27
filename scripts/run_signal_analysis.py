@@ -162,7 +162,7 @@ def main() -> int:
     _, oos = data.in_sample_split(book, cfg.in_sample_fraction)
     n_in = len(book) - len(oos)
 
-    # --- 1. Deciles -------------------------------------------------------------
+    # 1. Deciles
     tables = []
     for sample, part, sl in (("full", book, slice(None)), ("out-of-sample", oos, slice(n_in, None))):
         moves = {h: future_move(part, h, cfg.max_gap_ms) for h in DECILE_HORIZONS_MS}
@@ -186,7 +186,7 @@ def main() -> int:
     plot_deciles(deciles[(deciles["sample"] == "out-of-sample") & (deciles.signal == "obi")],
                  args.figures, "Future mid move by level-1 OBI decile (out-of-sample, 95% CI)")
 
-    # --- 2. Latency sweep -------------------------------------------------------
+    # 2. Latency sweep
     side = backtest.threshold_side(obi[n_in:], threshold)
     rows = []
     for h in LATENCY_HORIZONS_MS:

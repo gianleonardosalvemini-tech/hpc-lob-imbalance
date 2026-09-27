@@ -35,7 +35,7 @@ Legacy OBI time is measured on the full CSV; the README claimed ~22 s.
 | 16 | 3.84 | 6.0x | 7.69 | 130 | 3.0x | 19% |
 | 22 | 3.85 | 6.0x | 7.55 | 132 | 3.1x | 14% |
 
-Scaling flattens early: each snapshot is 320 bytes and the kernels do ~2-6 flops per byte loaded, so they are memory-bandwidth bound, not compute bound.
+Scaling flattens early: each snapshot is 320 bytes and the kernels do well under one flop per byte loaded (about 0.3 for WOBI, far less for OBI), so they are memory-bandwidth bound, not compute bound.
 
 ## 3. Per-snapshot (tick-to-signal) latency
 

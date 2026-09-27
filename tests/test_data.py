@@ -1,12 +1,14 @@
 """lobimb.data: Book, CSV parsing, cache, sanity checks, split and describe()."""
+import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from conftest import flat_book, make_book
 from lobimb import backtest, data, metrics, signals
-from lobimb.config import BacktestConfig
+from lobimb.config import RAW_CSV, BacktestConfig
 
 
 def test_book_shape_validation():
@@ -119,8 +121,6 @@ def test_describe_small_volumes_and_obi_extremes():
 
 
 def test_describe_is_json_serialisable_and_matches_sanity():
-    import json
-
     book = make_book(1_000, seed=5)
     d = data.describe(book)
     assert json.loads(json.dumps(d)) == d
@@ -137,10 +137,6 @@ def test_describe_is_json_serialisable_and_matches_sanity():
 @pytest.mark.data
 def test_real_dataset_matches_csv(real_book):
     """The .npy cache matches the first and last rows of the raw CSV."""
-    import pandas as pd
-
-    from lobimb.config import RAW_CSV
-
     if not RAW_CSV.exists():
         pytest.skip("raw CSV missing")
     first = data.read_csv(RAW_CSV, nrows=100)

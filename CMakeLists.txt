@@ -5,7 +5,7 @@ project(lob_engine VERSION 1.0.0 LANGUAGES C)
 
 option(LOBIMB_OPENMP "Parallelise batch kernels with OpenMP" ON)
 option(LOBIMB_NATIVE "Tune for the build machine (-march=native)" ON)
-option(LOBIMB_BUILD_LEGACY "Also build the pre-refactor engine for benchmarks" ON)
+option(LOBIMB_BUILD_LEGACY "Also build the legacy (v1) engines for benchmarks" ON)
 
 # Benchmarks on a Debug build are meaningless.
 if(NOT CMAKE_BUILD_TYPE)
@@ -52,7 +52,7 @@ if(NOT WIN32)
   target_link_libraries(lob_engine PRIVATE m)
 endif()
 
-# Pre-refactor engine, built only for the before/after benchmarks.
+# Legacy (v1) engines, built only for the before/after benchmarks.
 # Flags mirror the original builds (OBI at -O0, WOBI at -O2).
 if(LOBIMB_BUILD_LEGACY)
   add_library(lob_legacy SHARED legacy/src_c/OBI/lob_engine.c)

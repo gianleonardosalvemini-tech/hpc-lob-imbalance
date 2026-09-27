@@ -1,10 +1,13 @@
-"""Generate a SYNTHETIC order book CSV in the raw schema of the real dataset.
+"""Generate a synthetic order book CSV in the raw schema of the real dataset.
 
-The real data (Kaggle "Bitcoin Limit Order Book (LOB) Data", BTC/USDT
-perpetual, ~1.2 GB) is not redistributed because its license could not be
-verified; this lets the pipeline run end to end without it.
+The full real dataset (Kaggle "Bitcoin Limit Order Book (LOB) Data", BTC/USDT
+perpetual, MIT license) is not included because of its size (~1.2 GB); a real
+excerpt with its first 100k snapshots ships as
+sample_data/btc_lob_sample_100k.csv.gz. This script instead generates a
+synthetic file with the same schema, so the pipeline and tests can run end to
+end without any real data.
 
-NOTHING PRODUCED FROM THIS FILE IS A RESEARCH RESULT. The mid-price is built
+Nothing produced from this file is a research result. The mid-price is built
 to respond weakly to the previous snapshot's OBI, so a small positive
 OBI -> future-mid relationship appears by construction. All numbers in the
 README and report come from the real dataset.

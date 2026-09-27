@@ -2,7 +2,7 @@
 
 Throughput (ns/row of a batch call) is what research runs care about; latency
 percentiles of single-snapshot calls are what a live system would pay. The
-legacy_* functions replay the pre-refactor per-tick loops for comparison.
+legacy_* functions replay the legacy (v1) per-tick loops for comparison.
 """
 from __future__ import annotations
 
@@ -10,16 +10,20 @@ import csv
 import ctypes
 import gc
 import itertools
+import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 
-from . import backtest, engine, reference, signals
+from . import backtest, data, engine, reference, signals
 from .config import PROJECT_ROOT, BacktestConfig
 from .data import Book
+
+_WIN = sys.platform == "win32"
 
 
 def best_of(fn: Callable[[], object], repeat: int = 5) -> float:
@@ -54,8 +58,6 @@ def timer_overhead_ns(n: int = 200_000) -> float:
     return float(np.median(samples))
 
 
-# --------------------------------------------------------------------------- batch
-
 def batch_throughput(levels: np.ndarray, threads: list[int], repeat: int = 5) -> list[dict]:
     """ns/row and rows/s of the C batch kernels for each thread count.
 
@@ -85,8 +87,6 @@ def numpy_baseline(levels: np.ndarray, repeat: int = 3) -> dict[str, float]:
             "numpy_wobi_ns_row": best_of(lambda: reference.wobi(arr, 10, 0.5), repeat) / n * 1e9}
 
 
-# ----------------------------------------------------------------- per-tick (streaming)
-
 def streaming_latency(levels: np.ndarray, n_calls: int = 200_000) -> dict[str, float]:
     """Per-snapshot latency through Python + ctypes, each call timed individually.
 
@@ -111,8 +111,6 @@ def streaming_latency(levels: np.ndarray, n_calls: int = 200_000) -> dict[str, f
         out.update(percentiles_ns(samples, name))
     return out
 
-
-# ------------------------------------------------------------------------- legacy
 
 # Mirrors of the structs in legacy/ (must match the C definitions). The int
 # volume in _LegacyLevel is the truncation bug.
@@ -144,7 +142,7 @@ def legacy_obi_csv_loop(csv_path: Path, nrows: int | None) -> dict[str, float]:
     csv.reader, int() truncation and two ctypes calls per tick. CSV parsing is
     timed too, as in the original pipeline.
     """
-    lib = ctypes.CDLL(str(engine.library_path("lob_legacy.dll" if _win() else "lob_legacy.so")))
+    lib = ctypes.CDLL(str(engine.library_path("lob_legacy.dll" if _WIN else "lob_legacy.so")))
     lib.init_lob_state.argtypes = [ctypes.POINTER(_LegacyState), ctypes.c_longlong, ctypes.c_double,
                                    ctypes.c_int, ctypes.c_double, ctypes.c_int]
     lib.compute_raw_obi.argtypes = [ctypes.POINTER(_LegacyState)]
@@ -170,7 +168,7 @@ def legacy_wobi_loop(levels: np.ndarray, nrows: int) -> dict[str, float]:
 
     The 40 ctypes field writes per tick dominate; the C part is negligible.
     """
-    lib = ctypes.CDLL(str(engine.library_path("wobi_legacy.dll" if _win() else "wobi_legacy.so")))
+    lib = ctypes.CDLL(str(engine.library_path("wobi_legacy.dll" if _WIN else "wobi_legacy.so")))
     lib.compute_signals.restype = _WMetrics
     lib.compute_signals.argtypes = [ctypes.POINTER(_WState), ctypes.c_double]
     state = _WState()
@@ -192,13 +190,6 @@ def legacy_wobi_loop(levels: np.ndarray, nrows: int) -> dict[str, float]:
     out.update(percentiles_ns(samples, "legacy_wobi"))
     return out
 
-
-def _win() -> bool:
-    import sys
-    return sys.platform == "win32"
-
-
-# ---------------------------------------------------------------------- end to end
 
 def end_to_end(book: Book, cfg: BacktestConfig = BacktestConfig()) -> dict[str, float]:
     """Signals plus one OBI fixed-horizon and one WOBI bracket backtest, default params.
@@ -225,7 +216,6 @@ def load_times(cache_dir: Path) -> dict[str, float]:
 
     The first scan is fast only when the OS page cache is warm.
     """
-    from . import data
     t0 = time.perf_counter()
     book = data.load(cache_dir, mmap=True)
     t1 = time.perf_counter()
@@ -238,18 +228,15 @@ def load_times(cache_dir: Path) -> dict[str, float]:
             "load_npy_full_s": t3 - t2}
 
 
-# ------------------------------------------------------------------------ native C
-
 def native_bench(rows: int = 3_730_870, calls: int = 1_000_000,
                  threads: int | None = None) -> dict[str, float]:
     """Run build/bin/bench_engine and parse its key=value output.
 
     Keys get a "c_" prefix; `threads` sets OMP_NUM_THREADS for the child only.
     """
-    exe = PROJECT_ROOT / "build" / "bin" / ("bench_engine.exe" if _win() else "bench_engine")
+    exe = PROJECT_ROOT / "build" / "bin" / ("bench_engine.exe" if _WIN else "bench_engine")
     env = None
     if threads is not None:
-        import os
         env = {**os.environ, "OMP_NUM_THREADS": str(threads)}
     out = subprocess.run([str(exe), str(rows), str(calls)], capture_output=True, text=True,
                          check=True, env=env).stdout

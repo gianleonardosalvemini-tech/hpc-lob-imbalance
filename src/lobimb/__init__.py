@@ -1,6 +1,6 @@
 """lobimb - order book imbalance research toolkit.
 
-Layers:
+Modules:
     config     paths and strategy/cost parameters (frozen dataclasses)
     data       load/validate snapshots (CSV -> cached .npy)
     engine     ctypes binding to the C/OpenMP batch kernels

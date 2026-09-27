@@ -25,13 +25,12 @@ from .data import DEPTH, ROW_WIDTH
 _LIB_NAMES = {"win32": "lob_engine.dll", "darwin": "lob_engine.dylib"}
 _DPTR = ctypes.POINTER(ctypes.c_double)
 
-# LOB_ERR_NULL, LOB_ERR_ARG in lob_engine.h
+# Must match LOB_ERR_NULL / LOB_ERR_ARG in lob_engine.h.
 _ERRORS = {-1: "null pointer", -2: "invalid argument"}
 
 
 class EngineError(RuntimeError):
     """The C library is missing or a kernel returned an error status."""
-    pass
 
 
 def library_path(name: str | None = None) -> Path:
@@ -137,7 +136,8 @@ def obi(levels: np.ndarray) -> np.ndarray:
     return out
 
 
-def wobi(levels: np.ndarray, depth: int = DEPTH, alpha: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
+def wobi(levels: np.ndarray, depth: int = DEPTH,
+         alpha: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
     """Depth-weighted imbalance and micro-price of every snapshot.
 
     Returns (imbalance, micro). Raises EngineError for depth outside [1, 10]

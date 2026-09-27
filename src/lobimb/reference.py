@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
+# Same values as LOB_DEPTH / LOB_ASK_OFFSET in lob_engine.h; keep in sync.
 DEPTH = 10
 ASK = 2 * DEPTH  # first ask column (LOB_ASK_OFFSET)
 
@@ -42,7 +43,7 @@ def wobi(levels: np.ndarray, depth: int, alpha: float) -> tuple[np.ndarray, np.n
 
 
 def legacy_obi_int(levels: np.ndarray) -> np.ndarray:
-    """What the pre-refactor engine computed: volumes truncated to int.
+    """What the legacy (v1) engine computed: volumes truncated to int.
 
     Most BTC volumes are below 1, so the signal collapses onto {-1, 0, +1}.
     """

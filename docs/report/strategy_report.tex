@@ -42,403 +42,271 @@ dall'OBI al WOBI, e perché non basta\\[4pt]
 
 \begin{abstract}
 \noindent
-In questo report racconto un progetto sulla microstruttura di BTC/USDT: volevo capire se lo
-squilibrio dei volumi nel limit order book (\emph{order book imbalance}) prevede il movimento
-del mid-price nei secondi successivi e se questa previsione si può trasformare in guadagno.
-Sono partito da un segnale al livello~1 (OBI) usato per entrare a mercato, con un primo
-backtest che dava un win rate sopra il 90\%, un numero che non sono più riuscito a riprodurre e
-su cui non baso nessuna conclusione. Rivedendo il codice ho
-trovato diversi errori miei (volumi troncati a intero, un filtro che sommava grandezze
-incoerenti, latenza zero, nessuna commissione, nessuna validazione out-of-sample) e ho rifatto
-l'analisi con un modello di esecuzione esplicito. Il risultato corretto è meno spettacolare ma
-più interessante: il segnale esiste ed è significativo anche out-of-sample, ma vale tra 0.04 e
-0.3\bp{} per lato, contro commissioni taker di 1.7--5\bp{}. Come strategia taker non funziona;
-la strada plausibile è l'esecuzione passiva, che con i dati che ho non posso simulare in modo
-credibile.
+Lo squilibrio dei volumi nel limit order book (\emph{order book imbalance}) prevede il movimento
+del mid-price di BTC/USDT nei secondi successivi? E si può guadagnare comprando e vendendo a
+mercato quando il segnale è forte? Su 3.7 milioni di snapshot del book la risposta è sì alla
+prima domanda e no alla seconda. Il segnale è reale e significativo anche out-of-sample, ma vale
+tra 0.04 e 0.3\bp{} per lato, mentre una commissione taker su Binance costa tra 1.7 e 5\bp{}.
+Usare dieci livelli del book invece del solo livello migliore rende il segnale più ordinato ma
+non ne cambia l'ordine di grandezza. Ci sono arrivato dopo aver scoperto che la mia prima
+versione, con un win rate sopra il 90\%, era piena di errori; la racconto nella
+Sezione~\ref{sec:v1}.
 \end{abstract}
 
 \tableofcontents
 \newpage
 
-\section{Da dove sono partito}
+% ---------------------------------------------------------------------------
+\section{Domanda e risposta in breve}
 \label{sec:intro}
 
 Il limit order book (LOB) raccoglie gli ordini limite in attesa, aggregati per livello di
-prezzo: i \emph{bid} sotto il prezzo corrente, gli \emph{ask} sopra. L'intuizione da cui sono
-partito è semplice: se al best bid c'è molto più volume che al best ask, la coda dell'ask si
-esaurirà prima e il prossimo movimento del mid sarà più probabilmente verso l'alto. È un'idea
-nota in letteratura~\cite{cont2014,stoikov2018} e mi sembrava un buon punto di partenza per
-lavorare per la prima volta su dati tick reali.
+prezzo: i \emph{bid} (chi vuole comprare) sotto il prezzo corrente, gli \emph{ask} (chi vuole
+vendere) sopra. L'intuizione da cui sono partito è semplice: se al miglior bid c'è molto più
+volume che al miglior ask, la coda dell'ask si esaurirà prima e il prossimo movimento del prezzo
+sarà più probabilmente verso l'alto. So che è un'idea studiata nella letteratura sulla
+microstruttura, anche se non ho ancora approfondito i lavori originali (ne elenco alcuni nella
+Sezione~\ref{sec:letture}); mi sembrava un buon modo per lavorare per la prima volta su dati tick
+reali.
 
-Le domande erano due. Una statistica: l'imbalance predice la variazione del mid nei secondi
-successivi? Una economica: l'edge basta a pagare spread, latenza e commissioni di una strategia
-che esegue a mercato? All'inizio consideravo la seconda un dettaglio; il lavoro è stato in gran
-parte scoprire che era la domanda principale. Alla prima ho risposto sì, anche out-of-sample.
-Alla seconda no: l'edge corrisponde a una commissione di pareggio di 0.04--0.3\bp{} per lato,
-contro 1.7--5\bp{} di una commissione taker reale su Binance.\footnote{Tariffe dei futures
-USD\textsuperscript{\tiny S}-M di Binance: taker 0.05\% (5\bp{}) al livello standard e 0.017\%
-(1.7\bp{}) al livello VIP più alto, \url{https://www.binance.com/en/fee/futureFee}.}
+Le domande erano due, e la risposta è diversa per ciascuna.
 
-Il report segue l'ordine in cui ho fatto le cose: prima versione con l'OBI
-(Sezione~\ref{sec:obi}), passaggio al WOBI (Sezione~\ref{sec:wobi}), revisione e scoperta degli
-errori (Sezione~\ref{sec:bug}), nuovo modello di esecuzione (Sezione~\ref{sec:esecuzione}) e
-risultati corretti (Sezione~\ref{sec:risultati}).
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Il segnale predice il prezzo? Sì.} Più il book è sbilanciato, più il mid si
+        muove nella direzione prevista, anche sui dati che non ho usato per scegliere i
+        parametri (t-stat fino a circa 57). È il grafico della Sezione~\ref{sec:ris-predice}.
+  \item \textbf{Ci si guadagna comprando e vendendo a mercato? No.} Il guadagno medio per
+        trade, prima delle commissioni, equivale a una commissione di 0.04--0.3\bp{} per lato.
+        Su Binance un taker paga tra 1.7\bp{} (livello VIP più alto) e 5\bp{} (livello
+        standard)\footnote{Tariffe dei futures USD\textsuperscript{\tiny S}-M di Binance: taker
+        0.05\% al livello standard e 0.017\% al livello VIP più alto,
+        \url{https://www.binance.com/en/fee/futureFee}.}: da 5 a 130 volte di più. Nessuna
+        scelta di soglia, orizzonte o take-profit colma questa distanza
+        (Sezione~\ref{sec:ris-nonpaga}).
+\end{enumerate}
 
+All'inizio consideravo la seconda domanda un dettaglio; il lavoro è stato in gran parte
+scoprire che era quella principale. La conclusione che ne traggo è che l'imbalance può servire
+a decidere \emph{come} quotare (market making), non \emph{se} attraversare lo spread; con questi
+dati però non posso verificarlo in modo credibile (Sezione~\ref{sec:limiti}).
+
+\paragraph{Come leggere il report.} Le Sezioni~\ref{sec:dati}--\ref{sec:esecuzione} spiegano
+dati, segnale e regole del backtest; la Sezione~\ref{sec:risultati} contiene i risultati; la
+Sezione~\ref{sec:v1} racconta la prima versione e gli errori che conteneva. In appendice ci sono
+il motore di calcolo e i benchmark (Appendice~\ref{app:calcolo}), le tabelle complete
+(Appendice~\ref{app:tabelle}) e l'elenco di tutte le assunzioni (Appendice~\ref{app:assunzioni}).
+
+% ---------------------------------------------------------------------------
 \section{Dati}
 \label{sec:dati}
 
-Il dataset contiene 3\,730\,870 snapshot del book di BTC/USDT dal 09/01/2023 al 20/01/2023
-(circa 11 giorni), campionati nominalmente ogni 250\,ms, con 10 livelli per lato; prezzi in
-USDT, volumi in BTC frazionari. Il CSV ha 43 colonne con intestazione solo posizionale: indice,
-timestamp in ms epoch, una stringa data/ora ridondante che non carico, poi 10 coppie (prezzo,
-volume) per il bid (colonne 3--22) e 10 per l'ask (23--42), dal livello migliore al peggiore.
-Il tick osservato è 0.1\usdt{}; poiché lo spot di Binance all'epoca quotava con un tick più
-fine, penso che i dati vengano dal perpetual USDT-margined, ma la fonte non lo documenta. Il
-prezzo va da circa 17\,100 a 21\,700\usdt{}, per cui un punto base vale circa 2\usdt{} per lato.
+Uso il dataset Kaggle \emph{Bitcoin Limit Order Book (LOB) Data}~\cite{kaggle}: 3\,730\,870
+snapshot del book del perpetual BTCUSDT di Binance dal 9 al 20 gennaio 2023 (circa 11 giorni),
+uno ogni 250\,ms, con 10 livelli di prezzo per lato. I prezzi sono in USDT e i volumi in BTC
+frazionari. Nel periodo BTC vale tra 17\,100 e 21\,700\usdt{}, quindi un punto base (bp) vale
+circa 2\usdt{}.
 
-Prima di qualunque analisi ho scritto una funzione (\code{sanity\_check}) che conta i problemi
-invece di scartare righe in silenzio: nessun book incrociato, nessun NaN, timestamp crescenti,
-ma 296 gap superiori a 500\,ms, il più lungo di circa 93\,s. Questo impone di misurare gli
-orizzonti in millisecondi e non in numero di snapshot, cosa che all'inizio non facevo.
+Tre caratteristiche dei dati contano per tutto il resto (statistiche complete nella
+Tabella~\ref{tab:data-summary} in appendice):
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Lo spread è quasi sempre minimo}: pari a un tick (0.1\usdt{}) nel 99.2\% degli
+        snapshot. Tutto ciò che il segnale può guadagnare si gioca su movimenti di pochi decimi
+        di USDT.
+  \item \textbf{Ci sono buchi nei dati}: 296 intervalli tra snapshot superiori a 500\,ms, il più
+        lungo di 93\,s. Per questo misuro gli orizzonti in millisecondi e non in numero di
+        snapshot, ed escludo i trade che attraversano un buco di oltre 2\,s.
+  \item \textbf{Per il resto i dati sono puliti}: nessun book incrociato, nessun valore mancante,
+        timestamp sempre crescenti. Li controllo con una funzione (\code{sanity\_check}) che
+        conta i problemi invece di scartare righe in silenzio.
+\end{itemize}
 
-\IfFileExists{data_summary.tex}{\input{data_summary.tex}}{}
+Divido i dati in ordine cronologico: il primo 70\% (fino al 17 gennaio) è
+\emph{in-sample}, gli ultimi tre giorni circa sono \emph{out-of-sample}. Salvo indicazione
+contraria i numeri che cito sono out-of-sample.
 
-Un dato della tabella mi ha colpito: lo spread è pari a un tick nel 99.2\% degli snapshot. Il
-book è quasi sempre stretto, e tutto ciò che il segnale può guadagnare si gioca su movimenti di
-pochi decimi di USDT.
+% ---------------------------------------------------------------------------
+\section{Il segnale}
+\label{sec:segnale}
 
-\section{Notazione e definizioni}
-\label{sec:notazione}
+Indico con $k$ lo snapshot (timestamp $t_k$ in ms) e con $i=0,\dots,9$ il livello, dove $0$ è
+il miglior prezzo, detto anche \emph{touch}. $P^b_i, V^b_i$ sono prezzo e volume del bid,
+$P^a_i, V^a_i$ quelli dell'ask. Il mid-price è $m = (P^b_0 + P^a_0)/2$ e lo spread
+$s = P^a_0 - P^b_0$.
 
-Le definizioni sono quelle implementate nel motore C (\code{engine/src/lob\_engine.c}) e nel
-package Python (\code{src/lobimb/}). Indico con $k$ lo snapshot, con timestamp $t_k$ in ms, e
-con $i\in\{0,\dots,9\}$ il livello ($0$ è il miglior prezzo); $P^b_{k,i}, V^b_{k,i}$ sono prezzo
-e volume del bid, $P^a_{k,i}, V^a_{k,i}$ quelli dell'ask, e ometto $k$ quando non serve. Il
-mid-price è $m = (P^b_0 + P^a_0)/2$ e lo spread $s = P^a_0 - P^b_0$.
-
-\paragraph{OBI di livello 1.}
+\paragraph{OBI (livello 1).} La misura più semplice di squilibrio usa solo il touch:
 \begin{equation}
-  \OBI =
-  \begin{cases}
-    \dfrac{V^b_0 - V^a_0}{V^b_0 + V^a_0} & \text{se } V^b_0 + V^a_0 > 0,\\[8pt]
-    0 & \text{se } V^b_0 + V^a_0 \le 0,\\[2pt]
-    \mathrm{NaN} & \text{se } V^b_0 + V^a_0 \text{ è NaN}.
-  \end{cases}
+  \OBI = \frac{V^b_0 - V^a_0}{V^b_0 + V^a_0} \in [-1, 1].
   \label{eq:obi}
 \end{equation}
-Vale $+1$ con volume solo sul bid e $-1$ con volume solo sull'ask. Propago il NaN invece di
-trasformarlo in zero, perché un dato corrotto non deve sembrare un book bilanciato.
+Vale $+1$ se c'è volume solo sul bid, $-1$ se solo sull'ask.\footnote{Se la somma dei volumi è
+zero l'OBI vale 0; se un volume è mancante (NaN) il segnale resta NaN, perché un dato corrotto
+non deve sembrare un book bilanciato.} La regola di trading è altrettanto semplice: data una
+soglia $\theta$ (di riferimento $0.6$) compro a mercato se $\OBI > \theta$, vendo se
+$\OBI < -\theta$, e chiudo dopo un orizzonte fisso $H$.
 
-\paragraph{Imbalance pesato in profondità (WOBI).} Con profondità $D\le 10$ e decadimento
-$\alpha\ge 0$ uso pesi $w_i = e^{-\alpha i}$, $i=0,\dots,D-1$: il touch ha peso 1 e ogni
-livello più profondo è scontato di $e^{-\alpha}$, perché gli ordini lontani hanno meno
-probabilità di essere eseguiti a breve e vengono cancellati più spesso. Con
-$W^b = \sum_{i<D} w_i V^b_i$ e $W^a = \sum_{i<D} w_i V^a_i$,
+\paragraph{WOBI (dieci livelli).} Il livello 1 descrive solo la coda esposta; i livelli più
+profondi dicono quanta liquidità resta quando il touch si esaurisce. Il WOBI è lo stesso
+rapporto calcolato sui volumi dei primi $D=10$ livelli, pesati con $w_i = e^{-\alpha i}$
+($\alpha = 0.5$): il touch pesa 1 e ogni livello più profondo conta meno, perché gli ordini
+lontani vengono eseguiti più di rado e cancellati più spesso.
 \begin{equation}
-  \WOBI = \frac{W^b - W^a}{W^b + W^a} \quad \text{se } W^b + W^a > 0,
-  \qquad 0 \text{ altrimenti (NaN se la somma è NaN)}.
+  \WOBI = \frac{\sum_i w_i V^b_i - \sum_i w_i V^a_i}{\sum_i w_i V^b_i + \sum_i w_i V^a_i}.
   \label{eq:wobi}
 \end{equation}
-Di default $D=10$ e $\alpha=0.5$ ($w_1\approx 0.61$, $w_9\approx 0.011$). Per $\alpha\to\infty$
-il WOBI si riduce all'OBI, per $\alpha=0$ è l'imbalance del volume totale sui $D$ livelli.
 
-\paragraph{Micro-price multi-livello.} La strategia WOBI usa questo micro-price:
+\paragraph{Micro-price ed edge.} La strategia WOBI usa anche un ``prezzo giusto'' che tiene
+conto dei volumi:
 \begin{equation}
-  \mu = \frac{\sum_{i<D} w_i \left( V^b_i\, P^a_i + V^a_i\, P^b_i \right)}
-             {\sum_{i<D} w_i \left( V^b_i + V^a_i \right)}
-  \quad \text{se } W^b + W^a > 0, \qquad
-  \mu = m \ \text{altrimenti}.
+  \mu = \frac{\sum_i w_i \left( V^b_i\, P^a_i + V^a_i\, P^b_i \right)}
+             {\sum_i w_i \left( V^b_i + V^a_i \right)} .
   \label{eq:micro}
 \end{equation}
-La ponderazione è incrociata: una coda bid grande rende più probabile un rialzo e sposta il
-``fair value'' verso l'ask. Per $D=1$ si ottiene il weighted mid classico
-$\mu_1 = (V^b_0 P^a_0 + V^a_0 P^b_0)/(V^b_0 + V^a_0)$, e con due passaggi si vede che
+La ponderazione è incrociata: molto volume sul bid sposta $\mu$ verso l'ask, cioè verso dove
+il prezzo probabilmente andrà. L'\emph{edge} $e = \mu - m$ misura in USDT quanto il prezzo
+giusto si discosta dal mid, ed è quindi confrontabile direttamente con spread e commissioni.
+
+Un conto di due righe mi ha chiarito molto. Con un solo livello ($D=1$)
 \begin{equation}
-  \mu_1 - m = \frac{s}{2}\,\OBI .
+  \mu_1 - m = \frac{s}{2}\,\OBI ,
   \label{eq:micro1}
 \end{equation}
-Questo conto per me è stato importante: al livello 1 il micro-price non aggiunge niente all'OBI,
-è solo l'OBI riscalato per il semispread, e con spread di un tick $|\mu_1 - m|\le 0.05\usdt{}$.
-Per $D>1$ invece
-\begin{equation}
-  \mu - m = \frac{\sum_i w_i \left[ V^b_i \,(P^a_i - m) - V^a_i\,(m - P^b_i) \right]}
-                 {\sum_i w_i \,(V^b_i + V^a_i)} ,
-  \label{eq:micro-dec}
-\end{equation}
-e le distanze $P^a_i - m$, $m - P^b_i$ crescono con la profondità: i livelli profondi pesano poco
-ma hanno un braccio più lungo, e $\mu$ non sta necessariamente dentro lo spread. Accoppiare il
-livello $i$ del bid con il livello $i$ dell'ask è una mia scelta euristica: il micro-price di
-Stoikov~\cite{stoikov2018} è il limite dell'aspettativa condizionata dei mid futuri dato lo
-stato del book, stimato dai dati, mentre la mia formula è solo una feature da valutare.
+cioè al livello 1 il micro-price è solo l'OBI riscalato per metà spread: con uno spread di un
+tick, $|\mu_1 - m| \le 0.05\usdt{}$. Tutto ciò che il micro-price aggiunge viene dai livelli
+profondi. Sul dataset $|e|$ ha mediana 0.05\usdt{} e 99-esimo percentile 0.37\usdt{}: il
+segnale vive quasi tutto dentro un tick.
 
-\paragraph{Edge.} Il segnale direzionale del WOBI è $e = \mu - m$ in USDT, confrontabile
-direttamente con spread e commissioni. Sul dataset $|e|$ ha mediana 0.05\usdt{} e 99-esimo
-percentile 0.37\usdt{}: il segnale vive quasi tutto dentro lo spread di un tick.
+La mia formula per $\mu$, che accoppia il livello $i$ del bid con il livello $i$ dell'ask, è
+un'euristica, da trattare come una feature da valutare e non come un modello. In letteratura
+esiste una definizione di micro-price stimata dai dati, dovuta a Stoikov, che non ho ancora
+studiato (Sezione~\ref{sec:letture}).
 
-\section{Prima versione: OBI al livello 1}
-\label{sec:obi}
-
-In un book a priorità prezzo-tempo il mid si muove quando una coda al touch si esaurisce o
-quando un nuovo ordine migliora il prezzo, e Cont, Kukanov e Stoikov~\cite{cont2014} mostrano
-che lo squilibrio del flusso al touch ha un effetto quasi lineare sulle variazioni di prezzo a
-breve. L'OBI è la misura più semplice di questa asimmetria e la mia prima regola era
-altrettanto semplice: data una soglia $\theta$ (di riferimento $0.6$),
-\begin{equation}
-  d_k =
-  \begin{cases}
-    +1 & \text{se } \OBI_k > \theta \quad \text{(compro a mercato)},\\
-    -1 & \text{se } \OBI_k < -\theta \quad \text{(vendo a mercato)},\\
-    0  & \text{altrimenti (un NaN dà } 0),
-  \end{cases}
-  \label{eq:obi-rule}
-\end{equation}
-con chiusura a mercato dopo un orizzonte fisso $H$.
-
-Il primo backtest (\code{legacy/src\_python/OBI/backtest\_strategy.py}) girava sulle prime
-100\,000 righe (poco più di 7 ore, tutte in-sample), eseguiva ai prezzi dello stesso snapshot
-che generava il segnale, misurava gli orizzonti in snapshot (4, 20 e 80, che interpretavo come
-1, 5 e 20\,s), non aveva commissioni e sottraeva solo uno ``slippage'' fisso di 0--2\usdt{} per
-round trip. Ne usciva un win rate sopra il 90\%.
-
-\subsection{Il miraggio del 90\%}
-Non ci ho creduto, e il motivo è più da giocatore di poker che da ingegnere. Al tavolo non
-basta vincere spesso: una mano va giocata se il piatto paga abbastanza rispetto a quanto costa
-restare dentro, cioè se le \emph{pot odds} sono favorevoli. Un win rate del 90\% su movimenti
-di un tick, con uno spread di un tick da pagare, non aveva senso. Ho smesso di guardare il win
-rate e ho iniziato a ragionare in termini di valore atteso al netto dei costi: già con quel
-codice bastava uno slippage di circa 0.3\usdt{} per portare l'EV netto a 1\,s sotto zero.
-
-Di quel 90\% non ho più il codice né la configurazione che l'avevano prodotto, e non sono più
-riuscito a riprodurlo: rieseguendo il metodo originale ancora presente nel repository (prime
-100\,000 righe, latenza zero, nessuna commissione) ottengo un win rate tra il 15\% e il 55\%
-(Tabella~\ref{tab:legacy}). Non so come fosse stato calcolato, quindi lo considero un dato
-inaffidabile e non ci costruisco sopra nessuna conclusione.
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{price_vs_obi.png}
-\caption{Mid-price (blu, asse sinistro) e OBI di livello 1 (rosso, asse destro) sui primi
-5\,000 snapshot. L'OBI oscilla tra gli estremi mentre il mid resta fermo per decine di secondi.}
-\label{fig:price-obi}
-\end{figure}
-
-La Figura~\ref{fig:price-obi} è il grafico che mi ha convinto a cambiare approccio: l'OBI
-sembrava ``saturare'' continuamente verso $\pm1$ mentre il prezzo restava bloccato. Nel README
-di allora ne avevo tratto due conclusioni. La prima, che il taking fosse perdente per i costi,
-era giusta. La seconda, un ``alpha decay'' per cui il vantaggio sparisce allungando
-l'orizzonte, era sbagliata, come mostro nella Sezione~\ref{sec:risultati}. Anche la saturazione
-era in parte un artefatto, dovuto a un bug (Sezione~\ref{sec:bug}).
-
-\section{Seconda versione: WOBI e micro-price}
-\label{sec:wobi}
-
-Il passo successivo è stato usare la profondità. Il livello 1 descrive solo la coda esposta,
-mentre i livelli 2--10 dicono quanta liquidità resta quando il touch si esaurisce, e una media
-pesata dovrebbe essere meno nervosa dell'OBI. In più l'edge $e=\mu-m$ è in USDT, quindi potevo
-fissare target di uscita in prezzo e confrontare il segnale con i costi.
-
-La strategia che avevo scritto (\code{legacy/src\_python/WOBI/quant\_strategy.py}, motore
-\code{legacy/src\_c/WOBI/wobi\_engine.c}) usava $D=10$, $\alpha=0.5$, soglia di imbalance
-$0.6$, commissione taker $0.0004$ (4\bp{}) e time-stop di 2\,500\,ms. Entravo long se
-\begin{equation}
-  e > 0.2 + s + m\cdot 0.0004 \quad\text{e}\quad \WOBI > 0.6,
-  \label{eq:legacy-filter}
-\end{equation}
-e simmetricamente short, con take-profit al micro-price calcolato all'ingresso e stop-loss a
-tre spread dal prezzo di esecuzione. L'idea di fondo mi sembra ancora ragionevole;
-l'implementazione, come ho scoperto dopo, no.
-
-\section{Revisione del codice: cosa avevo sbagliato}
-\label{sec:bug}
-
-Rileggendo tutto il codice per capire perché certi numeri non tornavano ho trovato più errori
-di quanti mi aspettassi.
-
-\paragraph{Volumi troncati a intero.} Il motore C dell'OBI memorizzava i volumi come
-\code{int} e lo script di ingestione li convertiva con \code{int(float(v))}. Il volume al best
-level è sotto 1\,BTC in circa il 14\% degli snapshot per ciascun lato, e lì il troncamento lo
-azzerava: 0.3 contro 0.7\,BTC diventava 0 contro 0 (OBI $=0$ invece di $-0.4$), 1.2 contro 0.7
-diventava 1 contro 0 (OBI $=+1$). Così il 26.5\% degli snapshot aveva OBI esattamente $\pm1$,
-contro lo 0\% con i volumi corretti (Tabella~\ref{tab:obi-dist}, Figura~\ref{fig:obi-dist}).
-La ``saturazione'' che avevo letto come una proprietà del mercato era in buona parte un mio
-bug. Sulla soglia $0.6$ il backtest cambia poco, perché la frazione con $|\OBI|>0.6$ è quasi la
-stessa, ma l'informazione graduale del segnale va persa.
-
-\begin{table}[H]
-\centering
-\small
-\caption{Distribuzione dell'OBI di livello 1 sull'intero dataset con volumi corretti e troncati
-a intero (fonte: \code{obi\_signal\_distribution.csv}).}
-\label{tab:obi-dist}
-\begin{tabular}{@{}lrr@{}}
-\toprule
-Metrica & Corretto (float) & Legacy (int) \\
-\midrule
-Frazione con $|\OBI| = 1$     & 0.00\%  & 26.50\% \\
-Frazione con $|\OBI| > 0.6$   & 61.12\% & 62.33\% \\
-Frazione con $\OBI = 0$       & 0.005\% & 2.19\%  \\
-Media di $|\OBI|$             & 0.652   & 0.674   \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=0.8\textwidth]{obi_distribution.png}
-\caption{Distribuzione dell'OBI di livello 1 con volumi corretti (\emph{correct}) e troncati
-(\emph{legacy int}). La forma a U è reale, ma il troncamento raddoppia il picco a $\pm1$ e crea
-masse spurie in $0$ e in valori razionali semplici.}
-\label{fig:obi-dist}
-\end{figure}
-
-\paragraph{Un filtro con unità miste.} Nella~\eqref{eq:legacy-filter} sommavo una soglia e uno
-spread con $m\cdot 0.0004$, cioè la commissione di un lato, circa 7\usdt{} ai prezzi del
-periodo, e confrontavo il tutto con un edge che non supera quasi mai 1\usdt{}. La condizione
-era vera su 5 snapshot su 3.73 milioni: la strategia WOBI di fatto non faceva trade, e io non me
-ne ero accorto perché guardavo statistiche aggregate e non il numero di operazioni.
-
-\paragraph{Take-profit sotto il pareggio.} Il target al micro-price copriva al più la
-commissione di ingresso; in uscita ne sottraevo una seconda, quindi anche i trade chiusi in
-take-profit erano in perdita.
-
-\paragraph{Un finto modello di EV.} Lo script di ingestione stimava un ``valore atteso'' con
-una probabilità di successo che avevo inventato, $p = 0.5 + 0.2\,|\OBI|$, guadagno fisso
-2\usdt{}, perdita fissa 1\usdt{} e slippage 0.5\usdt{}:
-\begin{equation}
-  \EV = p\,(2 - 0.5) - (1-p)\,(1 + 0.5) = 3p - 1.5 = 0.6\,|\OBI| .
-\end{equation}
-La condizione ``segnale profittevole'' $\EV > 0.1$ equivaleva a $|\OBI| > 1/6$: stavo solo
-contando gli snapshot sopra una soglia implicita, senza nessun parametro stimato dai dati.
-
-\paragraph{Metodologia.} Il resto erano scelte ingenue più che bug: latenza zero, nessuna
-commissione nel backtest OBI, orizzonti in numero di snapshot anche attraverso gap di oltre un
-minuto (trade ``da 1\,s'' durati più di 60\,s), solo dati in-sample. E nel README avevo scritto
-di sfruttare il multithreading, ma il codice non lo faceva. Invece di correggere gli script uno
-per uno ho riscritto la pipeline attorno a un unico motore di backtest con un modello di
-esecuzione esplicito, con un test di regressione per ciascuno di questi errori.
-
-\section{Modello di esecuzione e assunzioni}
+% ---------------------------------------------------------------------------
+\section{Come simulo un trade}
 \label{sec:esecuzione}
 
-Tutte le strategie usano ora lo stesso motore (\code{src/lobimb/backtest.py}). Siano
-$d\in\{+1,-1\}$ il lato, $L$ la latenza, $\sigma$ lo slippage per lato in USDT e $f$ la
-commissione per lato in frazione del nozionale. Un segnale allo snapshot $k$ è eseguito allo
-snapshot $\ell = \min\{ j : t_j \ge t_k + L \}$ al prezzo $p^{\mathrm{in}} = P^a_{\ell,0} +
-\sigma$ (long) o $P^b_{\ell,0} - \sigma$ (short). A orizzonte fisso esco a $x = \min\{ j : t_j
-\ge t_{\ell} + H \}$. Con il bracket, detto $Q_j$ il prezzo a cui potrei chiudere ($P^b_{j,0}$ per un long,
-$P^a_{j,0}$ per uno short), scandisco gli snapshot successivi al fill ed esco al primo $j$ con
-\begin{equation}
-  d\,(Q_j - p^{\mathrm{in}}) \ge \mathrm{TP}
-  \quad\text{oppure}\quad
-  d\,(Q_j - p^{\mathrm{in}}) \le -\mathrm{SL},
-\end{equation}
-altrimenti al time-stop o, se i dati finiscono prima, sull'ultimo snapshot. Con
-$p^{\mathrm{out}} = P^b_{x,0} - \sigma$ (long) o $P^a_{x,0} + \sigma$ (short):
-\begin{gather}
-  \mathrm{PnL}^{\mathrm{lordo}} = d\,(p^{\mathrm{out}} - p^{\mathrm{in}}), \qquad
-  \mathrm{PnL}^{\mathrm{netto}} = \mathrm{PnL}^{\mathrm{lordo}} - f\,(p^{\mathrm{in}} + p^{\mathrm{out}}), \\
-  \mathrm{mid\_move} = d\,(m_x - m_k).
-\end{gather}
-Il PnL lordo è già al netto dello spread ma prima delle commissioni; il \code{mid\_move} misura
-il movimento del mid dal \emph{segnale} all'uscita, cioè ciò che guadagnerebbe un operatore
-senza attriti né latenza. Confrontare i due mostra quanto costano spread e latenza.
+Entrambe le strategie passano per lo stesso motore di backtest (\code{src/lobimb/backtest.py}),
+che segue regole fisse. Le ho scritte tutte perché nella prima versione erano proprio le regole
+implicite a falsare i risultati (Sezione~\ref{sec:v1}).
 
-\subsection{Assunzioni}
-Ho scritto tutte le assunzioni, anche quelle che sembravano ovvie, perché nella prima versione
-erano proprio quelle implicite a falsare i risultati.
-\begin{enumerate}[label=\textbf{A\arabic*.}, leftmargin=*]
-  \item \emph{Solo taker}: compro all'ask e vendo al bid; niente ordini limite né fill passivi.
-  \item \emph{Latenza}: fill al primo snapshot con $t_j \ge t_k + L$, di default $L = 250$\,ms.
-  \item \emph{Prezzo di fill}: il touch dello snapshot di fill, più/meno $\sigma$ (0 negli sweep).
-  \item \emph{Commissioni}: per lato sul nozionale; negli sweep riprezzo gli stessi trade a 0, 2
-        e 4\bp{}, perché la selezione non dipende dalle commissioni.
-  \item \emph{Una posizione alla volta}, selezione greedy, rientro sullo snapshot di uscita.
-  \item \emph{Orizzonti in tempo reale}: orizzonti e time-stop in ms dal fill.
-  \item \emph{Gap}: trade attraversati da un intervallo $>2\,000$\,ms esclusi dalle statistiche.
-  \item \emph{Fine dati}: bracket chiuso sull'ultimo snapshot; a orizzonte fisso trade scartato.
-  \item \emph{Size}: PnL per 1\,BTC, nessun impatto di mercato.
-  \item \emph{Nessuna coda}: non stimo posizione in coda né probabilità di fill.
-  \item \emph{Bracket su dati discreti}: ciò che succede tra due snapshot non lo vedo.
-  \item \emph{Validazione}: split cronologico 70/30; i segnali dipendono solo dallo snapshot
-        corrente, quindi non c'è leakage.
-  \item \emph{Statistica}: t-stat e intervalli di confidenza assumono trade indipendenti.
-  \item \emph{Sharpe}: annualizzato con $\sqrt{365}$ dal PnL giornaliero, solo indicativo.
+\subsection{Le regole}
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Latenza.} Un segnale allo snapshot $k$ non si esegue subito: il fill avviene al
+        primo snapshot $\ell$ almeno $L = 250$\,ms dopo, cioè di solito quello successivo.
+  \item \textbf{Entrata da taker.} Compro all'ask, $p^{\mathrm{in}} = P^a_{\ell,0} + \sigma$,
+        o vendo al bid, $p^{\mathrm{in}} = P^b_{\ell,0} - \sigma$, dove $\sigma$ è uno
+        slippage per lato (0 nei risultati riportati).
+  \item \textbf{Uscita.} Per l'OBI esco al primo snapshot almeno $H$ dopo il fill. Per il
+        WOBI uso un \emph{bracket}: esco appena il prezzo a cui potrei chiudere ha guadagnato
+        TP o perso SL rispetto a $p^{\mathrm{in}}$, e comunque dopo 2.5\,s (time-stop).
+  \item \textbf{Uscita da taker.} Chiudo un long al bid e uno short all'ask, di nuovo
+        $\mp\sigma$.
+  \item \textbf{Una posizione alla volta.} Mentre sono in posizione ignoro i nuovi segnali.
 \end{enumerate}
 
-Queste assunzioni non vanno tutte nella stessa direzione. Fill al touch senza slippage, assenza
-di impatto, t-stat con trade indipendenti e 36 combinazioni testate senza
-correzione~\cite{bailey2014} rendono i risultati più ottimistici. La latenza fissa di 250\,ms e
-la valutazione del bracket solo sugli snapshot possono pesare in entrambe le direzioni. L'uso
-esclusivo di ordini taker con commissioni taker è invece conservativo, perché un maker non paga
-lo spread e ha commissioni minori o rebate. L'esclusione dei gap è neutra: rimuove prezzi non
-negoziabili senza selezionare sul PnL.
-
-\section{Metriche}
-\label{sec:metriche}
-
-Siano $x_j$ e $g_j$ il PnL netto e lordo degli $N$ trade inclusi, $\bar x$ la media e
-$\hat\sigma$ la deviazione standard campionaria. Uso win rate $=\frac1N\sum_j
-\mathbf{1}\{x_j>0\}$, $\EV_{\mathrm{lordo}} = \frac1N \sum_j g_j$, $\EV_{\mathrm{netto}} = \bar x$,
+\noindent Indicando con $d = +1$ un long e $d = -1$ uno short, e con $f$ la commissione per
+lato in frazione del nozionale, per 1\,BTC:
 \begin{gather}
-  t = \frac{\bar x}{\hat\sigma/\sqrt{N}}, \qquad
-  \mathrm{SR}_{\mathrm{ann}} = \frac{\overline{R}_{\mathrm{giorno}}}{\hat\sigma_{\mathrm{giorno}}}\sqrt{365}, \\
-  \mathrm{MDD} = \max_{u} \Big( \max_{v\le u} E_v - E_u \Big),\quad E_u = \textstyle\sum_{j\le u} x_j,
+  \mathrm{PnL}^{\mathrm{lordo}} = d\,(p^{\mathrm{out}} - p^{\mathrm{in}}), \qquad
+  \mathrm{PnL}^{\mathrm{netto}} = \mathrm{PnL}^{\mathrm{lordo}}
+      - f\,(p^{\mathrm{in}} + p^{\mathrm{out}}), \\
+  \mathrm{mid\ move} = d\,(m_{\mathrm{uscita}} - m_k).
 \end{gather}
-con $R_{\mathrm{giorno}}$ il PnL netto per giorno UTC di uscita. Un $|t|\gtrsim 2$ corrisponde a
-circa il 5\% solo se i trade sono indipendenti, cosa che qui non è vera. La metrica che ho
-trovato più utile è però la \emph{commissione di pareggio}: le commissioni di un round trip
-valgono $f(p^{\mathrm{in}}+p^{\mathrm{out}}) \approx 2fP$, con $P$ il prezzo medio di
-esecuzione, quindi la commissione per lato che azzera l'EV netto è
+Il PnL lordo ha già pagato lo spread, due volte; mancano solo le commissioni. Il \emph{mid
+move} misura invece il movimento del mid dal momento del \emph{segnale}: è ciò che guadagnerebbe
+un operatore senza spread, senza latenza e senza commissioni. La differenza tra mid move e PnL
+lordo è il costo di spread e latenza.
+
+\subsection{Un esempio}
+
+Allo snapshot $k$ l'OBI vale $0.8$: segnale long. Il mid è 21\,000.05 (bid 21\,000.0, ask
+21\,000.1).
+\begin{enumerate}[leftmargin=*]
+  \item 250\,ms dopo compro all'ask dello snapshot $\ell$: $p^{\mathrm{in}} = 21\,000.1$.
+  \item Con $H = 5$\,s esco al primo snapshot almeno 5\,s dopo il fill. Lì il bid è
+        21\,000.9 e l'ask 21\,001.0: vendo a $p^{\mathrm{out}} = 21\,000.9$.
+  \item PnL lordo $= 21\,000.9 - 21\,000.1 = +0.8\usdt{}$; mid move $= 21\,000.95 -
+        21\,000.05 = +0.9\usdt{}$. Il segnale aveva ragione.
+  \item Commissioni a 2\bp{} per lato: $0.0002 \times (21\,000.1 + 21\,000.9) \approx
+        8.4\usdt{}$. PnL netto $\approx -7.6\usdt{}$.
+\end{enumerate}
+Un movimento di nove tick nella direzione giusta, che su questi dati è un buon risultato, si
+trasforma in una perdita. Tutto il report sta in questa sottrazione.
+
+\subsection{Quanto potrei pagare: la commissione di pareggio}
+
+Le commissioni di un round trip valgono circa $2fP$, con $P$ il prezzo medio di esecuzione
+(circa 21\,050\usdt{} out-of-sample). La commissione per lato che azzera il guadagno è quindi
 \begin{equation}
-  f^{*}_{\mathrm{bp}} = \frac{\EV_{\mathrm{lordo}}}{2P}\cdot 10^{4} \quad [\mathrm{bp}].
+  f^{*}_{\mathrm{bp}} = \frac{\EV_{\mathrm{lordo}}}{2P}\cdot 10^{4},
   \label{eq:breakeven}
 \end{equation}
-Ricavo $P$ dagli stessi CSV come $(\EV_{\mathrm{lordo}} - \EV_{\mathrm{netto}})/(2f)$: circa
-19\,500\usdt{} in-sample e 21\,050\usdt{} out-of-sample. $f^*$ riassume in un numero la
-domanda che conta: quanto potrei pagare, al massimo, per eseguire questo segnale?
+dove $\EV_{\mathrm{lordo}}$ è il PnL lordo medio per trade. È la metrica che ho trovato più
+utile, perché riassume in un numero la domanda che conta: quanto potrei pagare, al massimo, per
+eseguire questo segnale? La confronto con 1.7--5\bp{}. Accanto riporto il t-stat dell'EV, che
+dice se il segnale è distinguibile dal rumore (formule in Appendice~\ref{app:metriche}).
 
+\subsection{Le assunzioni che contano}
+
+L'elenco completo è nell'Appendice~\ref{app:assunzioni}; qui conta in che direzione pesano.
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Rendono i risultati più ottimistici}: fill al miglior prezzo senza slippage,
+        nessun impatto della mia size sul book, t-stat calcolati come se i trade fossero
+        indipendenti, e 21 configurazioni (12 OBI e 9 WOBI) guardate sia in-sample sia
+        out-of-sample senza correzione per test multipli.
+  \item \textbf{Rendono i risultati più pessimistici}: uso solo ordini a mercato. Un market
+        maker non paga lo spread, lo incassa, e ha commissioni minori o rebate.
+  \item \textbf{Possono pesare in entrambe le direzioni}: la latenza fissa di 250\,ms e il
+        bracket valutato solo sugli snapshot (ciò che succede tra due snapshot non lo vedo).
+\end{itemize}
+Poiché quasi tutte le approssimazioni favoriscono la strategia taker, e la strategia perde lo
+stesso, la conclusione negativa è robusta. L'unica assunzione che potrebbe ribaltarla è l'uso
+esclusivo di ordini a mercato.
+
+\paragraph{Strumenti di calcolo.} I segnali sono calcolati da un motore in C con OpenMP,
+chiamato da Python con una sola chiamata per l'intero dataset; l'ho verificato contro
+un'implementazione indipendente in NumPy con tolleranza $10^{-12}$. Una volta convertito il CSV
+in una cache binaria, l'intera pipeline, dai dati ai risultati, gira in meno di 2\,s. Dettagli e benchmark sono nell'Appendice~\ref{app:calcolo}.
+
+% ---------------------------------------------------------------------------
 \section{Risultati}
 \label{sec:risultati}
 
-Salvo diversa indicazione: dataset completo, split 70/30, latenza 250\,ms, slippage 0, PnL per
-1\,BTC, trade con gap esclusi.
+Salvo diversa indicazione: out-of-sample, latenza 250\,ms, slippage 0, PnL in USDT per trade
+per 1\,BTC.
 
-\subsection{Il metodo originale, rieseguito}
+\subsection{Il segnale predice il prezzo}
+\label{sec:ris-predice}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{obi_deciles.png}
+\caption{Movimento medio del mid (USDT) nei secondi successivi, per decile di OBI di livello 1,
+a 1, 5 e 20\,s, out-of-sample, con intervalli di confidenza al 95\%. Le linee tratteggiate
+indicano $\pm s/2$, il costo di attraversare lo spread su un solo lato.}
+\label{fig:obi-deciles}
+\end{figure}
+
+La Figura~\ref{fig:obi-deciles} guarda il fenomeno senza nessuna regola di trading, ed è il
+grafico più convincente del progetto. Divido gli snapshot in dieci gruppi per valore dell'OBI e
+misuro quanto si muove in media il mid dopo 1, 5 e 20\,s. La relazione è monotona: più il book
+è sbilanciato verso il bid, più il prezzo sale, e viceversa. L'effetto si concentra nelle code:
+nei decili estremi il mid si muove di circa 0.7\usdt{} a 1\,s e di oltre 1.5\usdt{} a 20\,s,
+mentre a 1\,s i decili centrali restano quasi dentro la banda $\pm s/2$.
+
+Il segnale quindi esiste. Lo spread non è l'ostacolo: nei decili estremi il movimento supera
+nettamente uno spread intero (0.1\usdt{}). L'ostacolo sono le commissioni, che a 2\bp{} per
+lato valgono circa 8\usdt{} per round trip.
+
+\subsection{Ma non paga le commissioni}
+\label{sec:ris-nonpaga}
 
 \begin{table}[H]
 \centering
 \footnotesize
-\caption{Metodo originale rieseguito (prime 100k righe, $\theta=0.6$, latenza 0, nessuna
-commissione). EV in USDT per trade per 1\,BTC; ``slip.'' è l'EV netto per uno slippage di round
-trip di 0.5, 1 e 2\usdt{}. Fonte: \code{obi\_legacy\_method.csv}.}
-\label{tab:legacy}
-\begin{tabular}{@{}llrrrrrrr@{}}
-\toprule
-Volumi & Orizz. & Trade & Win rate & Mid move & EV lordo & slip.\ 0.5 & slip.\ 1 & slip.\ 2 \\
-\midrule
-float & 1\,s  & 15\,018 & 15.0\% & 0.13 & 0.034 & $-0.466$ & $-0.966$ & $-1.966$ \\
-float & 5\,s  & 3\,582  & 38.4\% & 0.45 & 0.348 & $-0.152$ & $-0.652$ & $-1.652$ \\
-float & 20\,s & 1\,065  & 54.8\% & 0.84 & 0.740 & $0.240$  & $-0.260$ & $-1.260$ \\
-\midrule
-int   & 1\,s  & 15\,200 & 14.9\% & 0.13 & 0.032 & $-0.468$ & $-0.968$ & $-1.968$ \\
-int   & 5\,s  & 3\,621  & 38.2\% & 0.44 & 0.339 & $-0.161$ & $-0.661$ & $-1.661$ \\
-int   & 20\,s & 1\,072  & 54.9\% & 0.88 & 0.778 & $0.278$  & $-0.222$ & $-1.222$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Il win rate non supera il 55\% e la differenza tra volumi interi e float, su questa regola, è
-marginale. Già senza commissioni 0.5\usdt{} di slippage per round trip rende negativo l'EV a 1
-e 5\,s.
-
-\subsection{OBI al livello 1 con la metodologia corretta}
-
-\begin{table}[H]
-\centering
-\footnotesize
-\caption{OBI di livello 1, $\theta = 0.6$, out-of-sample. Valori in USDT per trade per 1\,BTC;
-t-stat e win rate a commissione nulla; $f^*$ dalla~\eqref{eq:breakeven}. Fonte:
-\code{obi\_sweep.csv}.}
+\caption{Strategia OBI, $\theta = 0.6$, out-of-sample. Win rate e t-stat a commissione nulla;
+$f^*$ è la commissione di pareggio~\eqref{eq:breakeven}. Tutte le soglie e il confronto
+in-sample sono nella Tabella~\ref{tab:obi-sweep} in appendice. Fonte: \code{obi\_sweep.csv}.}
 \label{tab:obi-oos}
 \begin{tabular}{@{}rrrrrrrrr@{}}
 \toprule
@@ -452,11 +320,333 @@ Orizz. & Trade & Win rate & Mid move & EV lordo & t-stat & $f^*$ (bp) & EV netto
 \end{tabular}
 \end{table}
 
+La Tabella~\ref{tab:obi-oos} si legge da sinistra a destra.
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Il segnale funziona}: l'EV lordo, che ha già pagato lo spread, è positivo a ogni
+        orizzonte con t-stat tra 5 e 45. Lo stesso vale per tutte le soglie, in-sample e
+        out-of-sample (t tra 3.6 e 57), e l'out-of-sample non è peggiore dell'in-sample.
+  \item \textbf{Il win rate inganna}: a 1\,s è solo del 32\% eppure l'EV è positivo con
+        $t = 45$. In un secondo il mid spesso non si muove, e chi è entrato all'ask ed esce al
+        bid perde esattamente lo spread; quando invece il prezzo si muove, va più spesso nella
+        direzione giusta.
+  \item \textbf{Ma è piccolissimo}: $f^*$ va da 0.05 a 0.28\bp{}, contro 1.7--5\bp{} reali. A
+        2\bp{} per lato si perdono circa 7--8\usdt{} per trade, a 4\bp{} circa 16.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\textwidth]{obi_ev_decay.png}
+\caption{OBI $>0.6$, out-of-sample: EV netto per trade in funzione dell'orizzonte (scala
+logaritmica) per commissioni di 0, 2 e 4\bp{} per lato. La curva a 0\bp{} cresce con
+l'orizzonte ma resta un ordine di grandezza sotto il costo delle commissioni.}
+\label{fig:ev-decay}
+\end{figure}
+
+Un risultato mi ha sorpreso. Nella prima versione avevo parlato di ``alpha decay'': tenendo la
+posizione più a lungo il vantaggio sembrava sparire. Con $\theta = 0.6$ l'EV lordo invece
+\emph{cresce} con l'orizzonte, da 0.22\usdt{} a 1\,s a 1.17\usdt{} a 60\,s
+(Figura~\ref{fig:ev-decay}). Su tutte le soglie, in-sample e out-of-sample, cresce fino a
+20\,s; tra 20 e 60\,s continua a crescere in quattro casi su sei e cala leggermente negli altri
+due (Tabella~\ref{tab:obi-sweep}).
+Quello che peggiora allungando l'orizzonte è la significatività, perché ci sono meno trade e più
+rumore. Il ``decadimento'' che vedevo era un effetto dei costi: con un costo fisso per trade gli
+orizzonti brevi, dove il guadagno per trade è minimo, sono i più penalizzati.
+
+\subsection{WOBI: stesso verdetto}
+\label{sec:ris-wobi}
+
+La strategia WOBI entra long se l'edge supera una soglia $\epsilon$ (in USDT) e
+$\WOBI > 0.6$, short nel caso simmetrico. Esce con un bracket simmetrico: take-profit e
+stop-loss alla stessa distanza dal fill (0.5, 1 o 2\usdt{}), con time-stop di 2.5\,s. Le
+commissioni entrano nel PnL, non nel filtro di entrata.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Strategia WOBI + micro-price con bracket TP/SL $=1$\usdt{}, out-of-sample. Win rate e
+t-stat a commissione nulla; ``uscite'' è la quota di trade chiusi in take-profit / stop-loss /
+time-stop. La griglia completa (TP/SL 0.5, 1, 2) è nella Tabella~\ref{tab:wobi-full} in
+appendice. Fonte: \code{wobi\_sweep.csv}.}
+\label{tab:wobi}
+\begin{tabular}{@{}rrrrrrrr@{}}
+\toprule
+$\epsilon$ & Trade & Win rate & Mid move & EV lordo & t-stat & EV netto 4\bp & Uscite (\%) \\
+\midrule
+0.05 & 95\,998 & 52.7\% & 0.90 & 0.39 & 57.8 & $-16.46$ & 41/19/41 \\
+0.10 & 46\,123 & 56.0\% & 1.14 & 0.36 & 30.9 & $-16.49$ & 46/24/30 \\
+0.20 & 19\,796 & 55.5\% & 1.29 & 0.26 & 12.0 & $-16.59$ & 48/30/23 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Il quadro è lo stesso dell'OBI (Tabella~\ref{tab:wobi}). Nella configurazione di riferimento ($\epsilon = 0.1$, TP/SL
+$= 1$\usdt{}) ottengo 46\,123 trade, EV lordo $+0.36\usdt{}$ con $t \approx 31$ ed EV netto a
+4\bp{} di $-16.5\usdt{}$. Su tutta la griglia la commissione di pareggio va da 0.05 a
+0.11\bp{}, con valori in-sample e out-of-sample molto vicini.
+
+Alzare $\epsilon$ aumenta il mid move ma non l'EV lordo. La mia interpretazione è che i segnali
+più forti siano anche quelli che il mercato sconta più in fretta, per cui una parte del
+movimento avviene durante i 250\,ms di latenza. Usare la profondità ha reso il segnale più
+ordinato, ma non ne ha cambiato l'ordine di grandezza.
+
+\subsection{Il costo della latenza}
+\label{sec:ris-latenza}
+
+Quest'ultima analisi non è una nuova strategia: riprendo l'OBI a orizzonte fisso e cambio solo
+il ritardo del fill. Uso l'orizzonte fisso e non il bracket perché, cambiando la latenza,
+cambierebbero anche le uscite in take-profit e stop-loss, e non potrei isolare l'effetto del
+ritardo.
+
 \begin{table}[H]
 \centering
 \small
-\caption{EV lordo in USDT per trade (t-stat tra parentesi) per soglia e orizzonte, in-sample
-(IS) e out-of-sample (OOS). Fonte: \code{obi\_sweep.csv}.}
+\caption{EV lordo in funzione della latenza; OBI $\theta=0.6$, out-of-sample; tra parentesi la
+variazione rispetto a latenza nulla. Grafico in Figura~\ref{fig:latency-decay} in appendice.
+Fonte: \code{latency\_sweep.csv}.}
+\label{tab:latenza}
+\begin{tabular}{@{}rcc@{}}
+\toprule
+Latenza & EV lordo a 1\,s & EV lordo a 5\,s \\
+\midrule
+0\,ms (irrealistico) & 0.37 & 0.84 \\
+250\,ms  & 0.22 ($-41\%$) & 0.65 ($-23\%$) \\
+500\,ms  & 0.15 ($-60\%$) & 0.55 ($-35\%$) \\
+1000\,ms & 0.10 ($-73\%$) & 0.42 ($-50\%$) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A 1\,s, passare da 0 a 250\,ms costa il 41\% dell'EV lordo, e a 1000\,ms ne resta poco più di
+un quarto. A 5\,s la perdita è più lenta, perché una parte maggiore del movimento avviene dopo
+il primo secondo. Buona parte dell'informazione entra nel prezzo subito dopo il segnale: chi
+arriva tardi paga lo spread per un movimento già avvenuto. Questo spiega anche perché il backtest
+a latenza zero della prima versione era così ottimista.
+
+% ---------------------------------------------------------------------------
+\section{Cosa avevo sbagliato nella prima versione}
+\label{sec:v1}
+
+I risultati precedenti vengono da una seconda versione del progetto. La prima (ancora nel
+repository, in \code{legacy/}) seguiva le stesse due idee, OBI e poi WOBI, ma con un
+backtest molto diverso e un risultato molto più bello.
+
+\subsection{Il miraggio del 90\%}
+
+Il primo backtest dell'OBI girava sulle prime 100\,000 righe (circa 7 ore, tutte in-sample),
+eseguiva ai prezzi dello stesso snapshot che generava il segnale, contava gli orizzonti in
+snapshot (4, 20 e 80, che interpretavo come 1, 5 e 20\,s), non aveva commissioni e sottraeva
+solo uno ``slippage'' fisso. Ne usciva un win rate sopra il 90\%.
+
+Non ci ho creduto, e il motivo è più da giocatore di poker che da ingegnere. Al tavolo non
+basta vincere spesso: una mano va giocata se il piatto paga abbastanza rispetto a quanto costa
+restare dentro, cioè se le \emph{pot odds} sono favorevoli. Un win rate del 90\% su movimenti
+di un tick, con uno spread di un tick da pagare, non aveva senso. Ho smesso di guardare il win
+rate e ho iniziato a ragionare in termini di valore atteso al netto dei costi.
+
+Quel 90\% non sono più riuscito a riprodurlo: non ho più il codice né la configurazione che
+l'avevano prodotto. Rieseguendo il metodo originale ancora presente nel repository (prime
+100\,000 righe, latenza zero, nessuna commissione) ottengo un win rate tra il 15\% e il 55\%
+(Tabella~\ref{tab:legacy}), e già 0.5\usdt{} di slippage per round trip rendono negativo l'EV a
+1 e 5\,s. Lo considero un dato inaffidabile e non ci costruisco sopra nessuna conclusione.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\caption{Metodo originale rieseguito (prime 100k righe, $\theta=0.6$, latenza 0, nessuna
+commissione, volumi corretti). ``Slip.'' è l'EV per uno slippage di round trip di 0.5, 1 e
+2\usdt{}. Con i volumi troncati a intero i numeri sono quasi identici
+(Tabella~\ref{tab:legacy-full}). Fonte: \code{obi\_legacy\_method.csv}.}
+\label{tab:legacy}
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+Orizz. & Trade & Win rate & Mid move & EV lordo & slip.\ 0.5 & slip.\ 1 & slip.\ 2 \\
+\midrule
+1\,s  & 15\,018 & 15.0\% & 0.13 & 0.034 & $-0.466$ & $-0.966$ & $-1.966$ \\
+5\,s  & 3\,582  & 38.4\% & 0.45 & 0.348 & $-0.152$ & $-0.652$ & $-1.652$ \\
+20\,s & 1\,065  & 54.8\% & 0.84 & 0.740 & $0.240$  & $-0.260$ & $-1.260$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Gli errori}
+
+Rileggendo tutto il codice per capire perché certi numeri non tornavano ho trovato più errori
+di quanti mi aspettassi.
+
+\paragraph{Volumi troncati a intero.} Il motore C memorizzava i volumi come interi. Il volume
+al touch è sotto 1\,BTC in circa il 14\% degli snapshot per lato, e lì il troncamento lo
+azzerava: 0.3 contro 0.7\,BTC diventava 0 contro 0 (OBI $=0$ invece di $-0.4$), 1.2 contro 0.7
+diventava 1 contro 0 (OBI $=+1$). Così il 26.5\% degli snapshot aveva OBI esattamente $\pm1$,
+contro lo 0\% con i volumi corretti (Tabella~\ref{tab:obi-dist}). Nel grafico che avevo fatto
+allora (Figura~\ref{fig:price-obi}, qui ricalcolata con i volumi corretti) l'OBI sembrava
+``saturare'' di continuo mentre il prezzo restava fermo, e io l'avevo letto come una proprietà
+del mercato: era in buona parte un mio bug. Sulla
+soglia 0.6 il backtest cambia poco, perché la quota di snapshot con $|\OBI| > 0.6$ è quasi la
+stessa, ma l'informazione graduale del segnale va persa.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Distribuzione dell'OBI di livello 1 sull'intero dataset con volumi corretti e troncati
+a intero (istogramma in Figura~\ref{fig:obi-dist} in appendice). Fonte:
+\code{obi\_signal\_distribution.csv}.}
+\label{tab:obi-dist}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+Metrica & Corretto (float) & Prima versione (int) \\
+\midrule
+Quota con $|\OBI| = 1$     & 0.00\%  & 26.50\% \\
+Quota con $|\OBI| > 0.6$   & 61.12\% & 62.33\% \\
+Quota con $\OBI = 0$       & 0.005\% & 2.19\%  \\
+Media di $|\OBI|$          & 0.652   & 0.674   \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{price_vs_obi.png}
+\caption{Mid-price (blu, asse sinistro) e OBI di livello 1 (rosso, asse destro) sui primi
+5\,000 snapshot, ricalcolato con i volumi corretti. Anche così l'OBI oscilla spesso tra valori
+estremi mentre il mid resta fermo per decine di secondi.}
+\label{fig:price-obi}
+\end{figure}
+
+\paragraph{Un filtro WOBI con unità miste.} La prima strategia WOBI entrava long se
+$e > 0.2 + s + m\cdot 0.0004$: sommava a soglia e spread la commissione di un lato,
+$m \cdot 0.0004 \approx 8\usdt{}$, e confrontava il tutto con un edge che non supera quasi mai
+1\usdt{}. La condizione era vera su 5 snapshot su 3.73 milioni: la strategia di fatto non
+faceva trade, e io non me ne ero accorto perché guardavo statistiche aggregate e non il numero
+di operazioni.
+
+\paragraph{Take-profit sotto il pareggio.} Il take-profit era fissato al micro-price calcolato
+all'ingresso, che copriva al più la commissione di entrata; in uscita ne pagavo una seconda,
+quindi anche i trade chiusi in take-profit erano in perdita. Ora take-profit e stop-loss sono
+distanze in USDT dal prezzo di fill.
+
+\paragraph{Un finto modello di EV.} Lo script di ingestione stimava un ``valore atteso'' con
+una probabilità di successo inventata, $p = 0.5 + 0.2\,|\OBI|$, guadagno fisso 2\usdt{},
+perdita fissa 1\usdt{} e slippage 0.5\usdt{}. Il conto dà $\EV = 0.6\,|\OBI|$, quindi la
+condizione ``segnale profittevole'' $\EV > 0.1$ equivaleva a $|\OBI| > 1/6$: stavo solo contando
+gli snapshot sopra una soglia implicita, senza nessun parametro stimato dai dati.
+
+\paragraph{Metodologia.} Il resto erano scelte ingenue più che bug: latenza zero, nessuna
+commissione nel backtest OBI, solo dati in-sample, e orizzonti contati in snapshot. Sulle prime
+100\,000 righe i buchi nei dati sono brevi, ma sul dataset completo, con buchi fino a 93\,s, un
+trade ``da 1\,s'' contato in snapshot poteva durare più di un minuto. Nel README di allora
+avevo anche scritto di sfruttare il multithreading, ma il codice non lo faceva.
+
+Invece di correggere gli script uno per uno ho riscritto la pipeline attorno a un unico motore
+di backtest con le regole esplicite della Sezione~\ref{sec:esecuzione}, e con un test di
+regressione per ciascuno di questi errori.
+
+% ---------------------------------------------------------------------------
+\section{Limiti e prossimi passi}
+\label{sec:limiti}
+
+Il limite principale non è nel codice: un edge di frazioni di punto base contro commissioni
+taker di 1.7--5\bp{} è un divario che va da circa 5 volte, nel caso più favorevole, a circa
+130 volte per un conto standard, e nessuna scelta di soglia, orizzonte o bracket lo colma. È la
+conclusione che considero più solida.
+
+Il secondo limite sono i dati. Snapshot ogni 250\,ms senza il flusso dei trade non dicono cosa
+succede tra uno snapshot e l'altro, né quale sarebbe la mia posizione in coda con un ordine
+limite. Per questo il market making, l'uso che mi sembra più promettente per questo segnale,
+con questi dati non è testabile in modo credibile: il risultato dipenderebbe quasi solo dalle
+ipotesi sul fill. Lavoro poi su un solo strumento, 11 giorni e circa 3 giorni di
+out-of-sample, con un solo split. La statistica è ingenua: trade consecutivi sono
+autocorrelati e ho guardato 21 configurazioni senza correzione per test multipli. Con t-stat
+fino a 50--60 sugli orizzonti brevi non credo che ``il segnale esiste'' cambierebbe, ma la
+significatività è sovrastimata.
+
+I passi successivi, in ordine di priorità:
+\begin{enumerate}[leftmargin=*]
+  \item Dati L2 incrementali (le singole modifiche del book) insieme ai trade, con timestamp
+        dell'exchange, su più mesi e più strumenti.
+  \item Un simulatore a eventi con coda FIFO per livello e fill sui trade reali: l'unico modo
+        per testare seriamente l'esecuzione passiva.
+  \item Usare il segnale per il pricing e non per la direzione, per esempio quote asimmetriche
+        o gestione dell'inventario alla Avellaneda--Stoikov con un drift stimato
+        dall'imbalance. Con commissioni maker nulle o negative, un edge di
+        qualche decimo di punto base diventa rilevante.
+  \item Feature migliori (Order Flow Imbalance, micro-price di Stoikov) valutate con $R^2$
+        out-of-sample invece di soglie fisse.
+  \item Validazione walk-forward, errori standard robusti all'autocorrelazione (Newey--West o
+        bootstrap a blocchi) e una correzione per test multipli come il deflated Sharpe
+        ratio.
+\end{enumerate}
+
+\subsection{Letture da cui ripartirei}
+\label{sec:letture}
+
+Questi sono i lavori di riferimento sui temi toccati dal report. Non li ho ancora studiati: li
+elenco come punto di partenza per i prossimi passi, non come fonti delle affermazioni fatte qui.
+\begin{itemize}[leftmargin=*]
+  \item R.~Cont, A.~Kukanov e S.~Stoikov, \emph{The price impact of order book events},
+        Journal of Financial Econometrics, 2014. Come gli eventi al touch del book muovono il
+        prezzo; introduce l'Order Flow Imbalance.
+  \item S.~Stoikov, \emph{The micro-price: a high-frequency estimator of future prices},
+        Quantitative Finance, 2018. La definizione di micro-price stimata dai dati.
+  \item M.~Avellaneda e S.~Stoikov, \emph{High-frequency trading in a limit order book},
+        Quantitative Finance, 2008. Il modello classico di market making con gestione
+        dell'inventario.
+  \item Á.~Cartea, S.~Jaimungal e J.~Penalva, \emph{Algorithmic and High-Frequency Trading},
+        Cambridge University Press, 2015. Manuale su microstruttura, esecuzione e market
+        making.
+  \item D.~H.~Bailey e M.~López de Prado, \emph{The deflated Sharpe ratio: correcting for
+        selection bias, backtest overfitting, and non-normality}, Journal of Portfolio
+        Management, 2014. Una correzione per test multipli nei backtest.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+\section{Conclusioni}
+\label{sec:conclusioni}
+
+Sono partito da un'idea semplice e da un numero troppo bello, che non sono più riuscito a
+riprodurre, e il lavoro più utile è stato non fidarmi di quel numero e rifare l'analisi da capo.
+Corretti gli errori, il quadro è chiaro: l'imbalance del book, al livello 1 come su dieci
+livelli, predice il movimento del mid tra 1 e 60 secondi, anche out-of-sample; ma l'edge vale
+0.04--0.3\bp{} per lato, uno o due ordini di grandezza sotto le commissioni taker, ed è eroso
+rapidamente dalla latenza.
+
+La lezione che mi porto dietro è quella che avevo intuito pensando alle pot odds: la probabilità
+di avere ragione conta solo insieme al prezzo che si paga per giocare. L'imbalance mi sembra
+un'informazione utile per decidere \emph{come} quotare più che \emph{se} attraversare lo spread,
+ma verificarlo richiede dati a livello di evento e un simulatore di esecuzione passiva, ed è da
+lì che vorrei ripartire.
+
+\paragraph{Nota sugli strumenti.} Ho usato assistenti AI per parte del refactoring del codice,
+per scrivere alcuni test e nella stesura di questo testo; la domanda di ricerca, le scelte di
+analisi e le conclusioni sono mie.
+
+% ---------------------------------------------------------------------------
+\appendix
+
+\section{Motore di calcolo e benchmark}
+\label{app:calcolo}
+
+Iterare 3.7 milioni di righe in Python rendeva ogni prova lentissima, quindi ho separato il
+calcolo dei segnali, in C, dall'analisi, in Python. Il motore (\code{engine/include/lob\_engine.h})
+elabora $n$ snapshot per chiamata e parallelizza sulle righe con OpenMP; ogni riga è calcolata
+da un solo thread, quindi il risultato non dipende dal numero di thread. Gli snapshot sono righe
+di 40 double nello stesso ordine del CSV, così l'array NumPy passa al C senza copie via
+\code{ctypes}, con una chiamata per dataset invece che una per tick come nel codice originale.
+Il CSV è letto una volta e salvato in una cache \code{.npy} aperta in memory-map. Per fidarmi
+del C l'ho confrontato con un'implementazione indipendente in NumPy con tolleranza $10^{-12}$.
+
+% Generated by scripts/benchmarks_to_latex.py from results/benchmarks.json.
+\input{benchmarks.tex}
+
+\section{Tabelle e figure complete}
+\label{app:tabelle}
+
+\IfFileExists{data_summary.tex}{\input{data_summary.tex}}{}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Strategia OBI: EV lordo in USDT per trade (t-stat tra parentesi) per soglia e
+orizzonte, in-sample (IS) e out-of-sample (OOS). Fonte: \code{obi\_sweep.csv}.}
 \label{tab:obi-sweep}
 \begin{tabular}{@{}llccc@{}}
 \toprule
@@ -475,69 +665,14 @@ OOS & 60\,s & 0.78 (3.6)  & 1.17 (5.3)  & 1.30 (5.9)  \\
 \end{tabular}
 \end{table}
 
-Il segnale c'è. Nella Tabella~\ref{tab:obi-oos} l'EV lordo, che sconta già lo spread, è
-positivo a ogni orizzonte, e nella Tabella~\ref{tab:obi-sweep} lo è in tutte le 24 combinazioni
-con t-stat tra 3.6 e 57; l'out-of-sample non è peggiore dell'in-sample, e l'EV cresce con la
-soglia: i segnali più estremi sono più informativi. Ma è piccolissimo. La commissione di
-pareggio va da circa 0.04\bp{} (IS, $\theta=0.4$, 1\,s) a circa 0.31\bp{} (OOS, $\theta=0.8$,
-60\,s); a 2\bp{} per lato l'EV netto scende a circa $-7$/$-8$\usdt{} per trade, a 4\bp{} a circa
-$-16$\usdt{}.
-
-Il risultato che mi ha sorpreso di più riguarda l'orizzonte. Per $\theta=0.6$ out-of-sample
-l'EV lordo passa da 0.22\usdt{} a 1\,s a 1.17\usdt{} a 60\,s: cresce, non decade. Cala invece la
-significatività, perché ci sono meno trade e più rumore. L'``alpha decay'' che avevo descritto
-nel README era quindi un effetto dei costi: con un costo fisso per trade gli orizzonti brevi,
-dove il guadagno per trade è minimo, sono i più penalizzati, e io avevo scambiato questo per un
-decadimento del segnale (Figura~\ref{fig:ev-decay}).
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=0.75\textwidth]{obi_ev_decay.png}
-\caption{OBI $>0.6$, out-of-sample: EV netto per trade (USDT per BTC) in funzione
-dell'orizzonte (scala logaritmica) per commissioni di 0, 2 e 4\bp{} per lato. La curva a 0\bp{}
-cresce con l'orizzonte ma resta un ordine di grandezza sotto il costo delle commissioni.}
-\label{fig:ev-decay}
-\end{figure}
-
-\IfFileExists{figures/obi_deciles.png}{%
-\begin{figure}[H]
-\centering
-\includegraphics[width=0.8\textwidth]{obi_deciles.png}
-\caption{Movimento medio futuro del mid (USDT) per decile di OBI di livello 1, a 1, 5 e 20\,s,
-out-of-sample, con intervalli di confidenza al 95\%. Le linee tratteggiate indicano $\pm s/2$,
-il costo di attraversare lo spread su un solo lato.}
-\label{fig:obi-deciles}
-\end{figure}
-
-La Figura~\ref{fig:obi-deciles} guarda lo stesso fenomeno senza nessuna regola di trading, ed è
-forse il grafico più convincente del progetto. La relazione tra OBI e movimento successivo del
-mid è monotona, con una pendenza che aumenta con l'orizzonte e che si concentra nelle code: i
-decili centrali restano quasi dentro la banda $\pm s/2$, mentre quelli estremi arrivano a circa
-0.7\usdt{} a 1\,s e oltre 1.5\usdt{} a 20\,s. Questo è coerente con l'EV che cresce con la
-soglia nella Tabella~\ref{tab:obi-sweep}. Il confronto con le linee chiarisce anche dove sta il
-problema: un taker paga mezzo spread in ingresso e mezzo in uscita, e nei decili estremi il
-movimento supera nettamente uno spread intero (0.1\usdt{}). Lo spread quindi non è l'ostacolo;
-lo sono le commissioni, che a 2\bp{} per lato valgono circa 8\usdt{} per round trip, cinque o
-dieci volte il movimento atteso.
-}{}
-
-\subsection{WOBI e micro-price}
-
-Nella versione corretta (\code{scripts/run\_wobi\_strategy.py}) entro long se $e > \epsilon$ e
-$\WOBI > 0.6$, short nel caso simmetrico, con $\epsilon$ in USDT; take-profit e stop-loss sono
-distanze in USDT dal prezzo di fill, il time-stop è di 2.5\,s dal fill e le commissioni entrano
-su entrambe le gambe nel PnL, non nel filtro. Per la~\eqref{eq:micro1} la componente di livello
-1 dell'edge non supera 0.05\usdt{}, quindi soglie $\epsilon \ge 0.05$ selezionano snapshot in cui
-l'edge viene in buona parte dai livelli profondi.
-
 \begin{table}[H]
 \centering
 \footnotesize
-\caption{WOBI + micro-price ($D=10$, $\alpha=0.5$, $\theta_I=0.6$, time-stop 2.5\,s),
-out-of-sample. $\epsilon$: soglia sull'edge (USDT); TP/SL: bracket simmetrico (USDT); uscite:
-quota tp/sl/time in \%; hold: durata media (s); ultima colonna: EV lordo in-sample. Fonte:
-\code{wobi\_sweep.csv}.}
-\label{tab:wobi}
+\caption{Strategia WOBI + micro-price ($D=10$, $\alpha=0.5$, $\WOBI > 0.6$, time-stop 2.5\,s),
+griglia completa, out-of-sample. $\epsilon$: soglia sull'edge (USDT); TP/SL: bracket simmetrico
+(USDT); win rate e t-stat a commissione nulla; uscite: quota tp/sl/time in \%; hold: durata
+media (s); ultima colonna: EV lordo in-sample. Fonte: \code{wobi\_sweep.csv}.}
+\label{tab:wobi-full}
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}rrrrrrrrcrr@{}}
 \toprule
@@ -557,146 +692,95 @@ $\epsilon$ & TP/SL & Trade & Win & Mid & EV & t-stat & EV netto & Uscite & Hold 
 \end{tabular}
 \end{table}
 
-Nella Tabella~\ref{tab:wobi}, con la configurazione che avevo scelto come riferimento
-($\epsilon = 0.1$, TP/SL $=1$\usdt{}), ottengo out-of-sample 46\,123 trade, mid move medio di $+1.14$\usdt{}, EV lordo di
-$+0.36$\usdt{} (t $\approx 31$), win rate lordo del 56\% ed EV netto a 4\bp{} di $-16.5$\usdt{}.
-Sull'intera griglia la commissione di pareggio va da circa 0.05 a 0.11\bp{}, con valori
-in-sample e out-of-sample molto vicini. Alzare $\epsilon$ migliora il mid move ma non l'EV
-lordo: la mia interpretazione è che i segnali più forti siano anche quelli che il mercato
-sconta più in fretta, per cui una parte del movimento avviene durante i 250\,ms di latenza.
-Usare la profondità ha reso il segnale più ordinato, ma non ne ha cambiato l'ordine di
-grandezza.
-
-\subsection{Il costo della latenza}
-
 \begin{table}[H]
 \centering
-\small
-\caption{EV lordo (USDT per trade per 1\,BTC) in funzione della latenza; OBI $\theta=0.6$,
-out-of-sample; tra parentesi la variazione rispetto a latenza nulla. Fonte:
-\code{docs/REPORT\_IT.md}, \S5.3.}
-\label{tab:latenza}
-\begin{tabular}{@{}rcc@{}}
+\footnotesize
+\caption{Metodo originale rieseguito con volumi corretti (float) e troncati a intero come nella
+prima versione (int). Stesse condizioni della Tabella~\ref{tab:legacy}. Fonte:
+\code{obi\_legacy\_method.csv}.}
+\label{tab:legacy-full}
+\begin{tabular}{@{}llrrrrrrr@{}}
 \toprule
-Latenza & EV lordo a 1\,s & EV lordo a 5\,s \\
+Volumi & Orizz. & Trade & Win rate & Mid move & EV lordo & slip.\ 0.5 & slip.\ 1 & slip.\ 2 \\
 \midrule
-0\,ms (irrealistico) & 0.37 & 0.84 \\
-250\,ms  & 0.22 ($-41\%$) & 0.65 ($-23\%$) \\
-500\,ms  & 0.15 ($-60\%$) & 0.55 ($-35\%$) \\
-1000\,ms & 0.10 ($-73\%$) & 0.42 ($-50\%$) \\
+float & 1\,s  & 15\,018 & 15.0\% & 0.13 & 0.034 & $-0.466$ & $-0.966$ & $-1.966$ \\
+float & 5\,s  & 3\,582  & 38.4\% & 0.45 & 0.348 & $-0.152$ & $-0.652$ & $-1.652$ \\
+float & 20\,s & 1\,065  & 54.8\% & 0.84 & 0.740 & $0.240$  & $-0.260$ & $-1.260$ \\
+\midrule
+int   & 1\,s  & 15\,200 & 14.9\% & 0.13 & 0.032 & $-0.468$ & $-0.968$ & $-1.968$ \\
+int   & 5\,s  & 3\,621  & 38.2\% & 0.44 & 0.339 & $-0.161$ & $-0.661$ & $-1.661$ \\
+int   & 20\,s & 1\,072  & 54.9\% & 0.88 & 0.778 & $0.278$  & $-0.222$ & $-1.222$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\IfFileExists{figures/latency_decay.png}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{obi_distribution.png}
+\caption{Distribuzione dell'OBI di livello 1 con volumi corretti (\emph{correct}) e troncati
+(\emph{legacy int}). La forma a U è reale, ma il troncamento raddoppia il picco a $\pm1$ e crea
+masse spurie in $0$ e in valori razionali semplici.}
+\label{fig:obi-dist}
+\end{figure}
+
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.7\textwidth]{latency_decay.png}
-\caption{EV lordo (USDT per BTC) in funzione della latenza di esecuzione (0, 250, 500,
-1000\,ms) per orizzonti di 1 e 5\,s; OBI $\theta=0.6$, out-of-sample. Stessi dati della
-Tabella~\ref{tab:latenza}.}
+\caption{EV lordo in funzione della latenza di esecuzione (0, 250, 500, 1000\,ms) per orizzonti
+di 1 e 5\,s; OBI $\theta=0.6$, out-of-sample. Stessi dati della Tabella~\ref{tab:latenza}.}
 \label{fig:latency-decay}
 \end{figure}
-}{}
 
-Questo risultato (Tabella~\ref{tab:latenza}\IfFileExists{figures/latency_decay.png}{ e
-Figura~\ref{fig:latency-decay}}{}) spiega perché la latenza zero del primo backtest era così
-dannosa. A 1\,s, passare da 0 a 250\,ms costa il 41\% dell'EV lordo, e a 1000\,ms ne resta poco
-più di un quarto (da 0.37 a 0.10\usdt{}). A 5\,s la perdita è più lenta (da 0.84 a
-0.42\usdt{}), perché una parte maggiore del movimento avviene dopo il primo secondo. Buona parte dell'informazione entra nel
-prezzo subito dopo il segnale: chi arriva tardi paga lo spread per un movimento già avvenuto.
-Per questo ho misurato anche la latenza del mio codice (Sezione~\ref{sec:benchmark}), pur
-sapendo che in un sistema reale il collo di bottiglia sarebbe la rete e non il calcolo.
+\section{Metriche}
+\label{app:metriche}
 
-\section{Architettura computazionale}
-\label{sec:architettura}
+Siano $x_j$ e $g_j$ il PnL netto e lordo degli $N$ trade inclusi, $\bar x$ la media e
+$\hat\sigma$ la deviazione standard campionaria. Uso win rate $=\frac1N\sum_j
+\mathbf{1}\{x_j>0\}$, $\EV_{\mathrm{lordo}} = \frac1N \sum_j g_j$, $\EV_{\mathrm{netto}} = \bar x$,
+\begin{gather}
+  t = \frac{\bar x}{\hat\sigma/\sqrt{N}}, \qquad
+  \mathrm{SR}_{\mathrm{ann}} = \frac{\overline{R}_{\mathrm{giorno}}}{\hat\sigma_{\mathrm{giorno}}}\sqrt{365}, \\
+  \mathrm{MDD} = \max_{u} \Big( \max_{v\le u} E_v - E_u \Big),\quad E_u = \textstyle\sum_{j\le u} x_j,
+\end{gather}
+con $R_{\mathrm{giorno}}$ il PnL netto per giorno UTC di uscita. Un $|t|\gtrsim 2$ corrisponde a
+circa il 5\% solo se i trade sono indipendenti, cosa che qui non è vera. Nella
+commissione di pareggio~\eqref{eq:breakeven} ricavo il prezzo medio di esecuzione $P$ dagli
+stessi risultati come $(\EV_{\mathrm{lordo}} - \EV_{\mathrm{netto}})/(2f)$: circa
+19\,500\usdt{} in-sample e 21\,050\usdt{} out-of-sample.
 
-Iterare 3.7 milioni di righe in Python rendeva ogni prova lentissima, quindi ho separato il
-calcolo dei segnali, in C, dall'analisi, in Python. Il motore (\code{engine/include/lob\_engine.h})
-elabora $n$ snapshot per chiamata e parallelizza sulle righe con OpenMP; ogni riga è calcolata
-da un solo thread, quindi il risultato non dipende dal numero di thread. Gli snapshot sono righe
-di 40 double nello stesso ordine del CSV, così l'array NumPy passa al C senza copie via
-\code{ctypes}, con una chiamata per batch invece che una per tick come nel codice originale. Il
-CSV è parsato una volta e salvato in una cache \code{.npy} aperta in memory-map. Per fidarmi del
-C l'ho confrontato con un'implementazione indipendente in NumPy con tolleranza $10^{-12}$.
+\section{Tutte le assunzioni}
+\label{app:assunzioni}
 
-\section{Benchmark di performance}
-\label{sec:benchmark}
+\begin{enumerate}[label=\textbf{A\arabic*.}, leftmargin=*]
+  \item \emph{Solo taker}: compro all'ask e vendo al bid; niente ordini limite né fill passivi.
+  \item \emph{Latenza}: fill al primo snapshot con $t_j \ge t_k + L$, di default $L = 250$\,ms.
+  \item \emph{Prezzo di fill}: il touch dello snapshot di fill, più/meno $\sigma$ (0 nei
+        risultati riportati).
+  \item \emph{Commissioni}: per lato sul nozionale. Riprezzo gli stessi trade a più livelli di
+        commissione (0, 2 e 4\bp{} per l'OBI, 0 e 4\bp{} per il WOBI), perché la selezione dei
+        trade non dipende dalle commissioni.
+  \item \emph{Una posizione alla volta}, selezione greedy, rientro possibile sullo snapshot di
+        uscita.
+  \item \emph{Orizzonti in tempo reale}: orizzonti e time-stop in ms dal fill.
+  \item \emph{Gap}: trade attraversati da un intervallo $>2\,000$\,ms esclusi dalle statistiche.
+  \item \emph{Fine dati}: bracket chiuso sull'ultimo snapshot; a orizzonte fisso trade scartato.
+  \item \emph{Size}: PnL per 1\,BTC, nessun impatto di mercato.
+  \item \emph{Nessuna coda}: non stimo posizione in coda né probabilità di fill.
+  \item \emph{Bracket su dati discreti}: take-profit e stop-loss sono controllati sul prezzo di
+        uscita (touch $\mp\sigma$) di ogni snapshot; ciò che succede tra due snapshot non lo
+        vedo.
+  \item \emph{Validazione}: split cronologico 70/30; i segnali dipendono solo dallo snapshot
+        corrente e le soglie non sono stimate dai dati, quindi non c'è leakage.
+  \item \emph{Statistica}: t-stat e intervalli di confidenza assumono trade indipendenti.
+  \item \emph{Sharpe}: annualizzato con $\sqrt{365}$ dal PnL giornaliero, solo indicativo.
+\end{enumerate}
 
-Riporto throughput, scalabilità OpenMP, latenza tick-to-signal (kernel C e binding
-Python/ctypes), confronto con il codice originale e tempi della pipeline; le tabelle sono
-generate automaticamente dai benchmark.
-
-% Generated by scripts/benchmarks_to_latex.py from results/benchmarks.json.
-\input{benchmarks.tex}
-
-\section{Limiti e prossimi passi}
-\label{sec:limiti}
-
-Il limite principale non è nel codice: un edge di frazioni di punto base contro commissioni
-taker di 1.7--5\bp{} è un divario che va da circa 5 volte, nel caso più favorevole, a circa
-130 volte per un conto standard, e nessuna scelta di soglia, orizzonte o
-bracket lo colma. È la conclusione che considero più solida.
-
-Il secondo limite sono i dati. Snapshot ogni 250\,ms senza il flusso dei trade non dicono cosa
-succede tra uno snapshot e l'altro, né quale sarebbe la mia posizione in coda con un ordine
-limite. Per questo il market making asimmetrico con cui avevo chiuso il README originale, con
-questi dati, non è testabile in modo credibile: il risultato dipenderebbe quasi solo dalle
-ipotesi sul fill. Lavoro poi su un solo strumento, 11 giorni e circa 3 giorni di
-out-of-sample, senza walk-forward. La statistica è ingenua: trade consecutivi sono
-autocorrelati e ho guardato 36 combinazioni senza correzione; con t-stat di 30--50 non credo che
-``il segnale esiste'' cambierebbe, ma la significatività è sovrastimata.
-
-I passi successivi, in ordine di priorità. Dati L2 incrementali (diff del book) insieme ai
-trade, con timestamp dell'exchange, su più mesi e simboli. Un simulatore event-driven con coda
-FIFO per livello e fill sui trade reali, l'unico modo per testare seriamente l'esecuzione
-passiva. Usare il segnale per il pricing e non per la direzione, per esempio con quote
-asimmetriche o gestione dell'inventario alla Avellaneda--Stoikov~\cite{avellaneda2008,cartea2015}
-con un drift stimato dall'imbalance: con commissioni maker nulle o negative un edge di qualche
-decimo di punto base diventa rilevante. Feature migliori (Order Flow Imbalance~\cite{cont2014},
-micro-price di Stoikov~\cite{stoikov2018}) valutate con $R^2$ out-of-sample invece di soglie
-fisse. Infine walk-forward, errori standard Newey--West o bootstrap a blocchi e una correzione
-per test multipli come il deflated Sharpe ratio~\cite{bailey2014}.
-
-\section{Conclusioni}
-\label{sec:conclusioni}
-
-Sono partito da un'idea semplice e da un numero troppo bello, che non sono più riuscito a
-riprodurre, e il lavoro più utile è stato non fidarmi di quel numero e rifare l'analisi da capo.
-Corretti gli errori, il quadro è chiaro: l'imbalance
-del book, al livello 1 come su dieci livelli, predice il movimento del mid tra 1 e 60 secondi,
-anche out-of-sample e con un EV lordo che cresce con l'orizzonte; ma l'edge vale
-0.04--0.3\bp{} per lato, uno o due ordini di grandezza sotto le commissioni taker, ed è eroso
-rapidamente dalla latenza.
-
-La lezione che mi porto dietro è quella che avevo intuito pensando alle pot odds: la probabilità
-di avere ragione conta solo insieme al prezzo che si paga per giocare. L'imbalance mi sembra
-un'informazione utile per decidere \emph{come} quotare più che \emph{se} attraversare lo spread,
-ma verificarlo richiede dati a livello di evento e un simulatore di esecuzione passiva, ed è da
-lì che vorrei ripartire.
-
-\paragraph{Nota sugli strumenti.} Ho usato assistenti AI per parte del refactoring del codice,
-per scrivere alcuni test e nella stesura di questo testo; la domanda di ricerca, le scelte di
-analisi e le conclusioni sono mie.
-
+% ---------------------------------------------------------------------------
 \begin{thebibliography}{9}
 
-\bibitem{avellaneda2008}
-M.~Avellaneda e S.~Stoikov. High-frequency trading in a limit order book.
-\emph{Quantitative Finance}, 8(3):217--224, 2008.
-\bibitem{bailey2014}
-D.~H.~Bailey e M.~López de Prado. The deflated Sharpe ratio: correcting for selection bias,
-backtest overfitting, and non-normality. \emph{Journal of Portfolio Management},
-40(5):94--107, 2014.
-\bibitem{cartea2015}
-Á.~Cartea, S.~Jaimungal e J.~Penalva. \emph{Algorithmic and High-Frequency Trading}.
-Cambridge University Press, 2015.
-\bibitem{cont2014}
-R.~Cont, A.~Kukanov e S.~Stoikov. The price impact of order book events.
-\emph{Journal of Financial Econometrics}, 12(1):47--88, 2014.
-\bibitem{stoikov2018}
-S.~Stoikov. The micro-price: a high-frequency estimator of future prices.
-\emph{Quantitative Finance}, 18(12):1959--1966, 2018.
+\bibitem{kaggle}
+Bitcoin Limit Order Book (LOB) Data (BTCUSDT perpetual, Binance), dataset Kaggle, licenza MIT.
+\url{https://www.kaggle.com/datasets/siavashraz/bitcoin-perpetualbtcusdtp-limit-order-book-data}.
 
 \end{thebibliography}
 

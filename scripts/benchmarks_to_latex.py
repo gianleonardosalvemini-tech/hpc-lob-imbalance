@@ -29,15 +29,14 @@ from run_benchmarks import compiler, cpu_name  # noqa: E402
 REPORT_DIR = PROJECT_ROOT / "docs" / "report"
 N_ROWS = 3_730_870
 
-# Reference palette: categorical slots 1-2, chart ink and grid.
+# Same blue/orange as the figures from run_signal_analysis.py.
 BLUE, ORANGE = "#2a78d6", "#eb6834"
 INK, MUTED, GRID = "#1f1f1e", "#6b6a64", "#e4e3dc"
 
 
 def num(v: float, digits: int = 1) -> str:
     """Italian-style number for LaTeX: thin-space thousands, decimal comma."""
-    s = f"{v:,.{digits}f}".replace(",", "\\,").replace(".", "{,}")
-    return s
+    return f"{v:,.{digits}f}".replace(",", "\\,").replace(".", "{,}")
 
 
 def scaling_figure(scaling: list[dict], path: Path) -> None:
@@ -209,8 +208,9 @@ contatore TSC del processore, overhead del timer {num(k['c_timer_overhead_p50_ns
 incluso). Chiamato da Python la mediana sale a {num(k['stream_wobi_p50_ns'], 0)}\,ns, circa
 {num(stream_over_c, 0)} volte di più: il costo è il confine Python/ctypes, non il calcolo.
 Per le misure lato Python ho dovuto usare \texttt{{perf\_counter\_ns}}, che su Windows ha
-risoluzione di 100\,ns, quindi quei valori sono quantizzati a quel passo. I massimi, nell'ordine dei millisecondi, sono dovuti
-a preemption del sistema operativo e interrupt, non al codice.
+risoluzione di 100\,ns, quindi quei valori sono quantizzati a quel passo. I massimi,
+nell'ordine dei millisecondi, sono dovuti a preemption del sistema operativo e interrupt,
+non al codice.
 
 \subsection{{Caricamento dei dati e pipeline completa}}
 
