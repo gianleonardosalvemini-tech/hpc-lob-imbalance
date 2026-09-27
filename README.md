@@ -6,6 +6,9 @@ I wanted to know whether the volume imbalance at the top of the Binance BTC/USDT
 
 This repo is the second version of the project. The first one reported a win rate above 90% that I haven't been able to reproduce, and most of what I learned came from not trusting it and redoing the analysis properly.
 
+> 📄 **Full report (PDF, 18 pages, in Italian): [docs/report/strategy_report.pdf](docs/report/strategy_report.pdf)**
+> Data, signal definitions, execution model, all results tables and what went wrong in the first version.
+
 ## Why I built this
 
 I'm Gianleonardo Salvemini. I did my BSc in Mathematical Engineering and I'm now in the first year of the MSc in Quantitative Finance at Politecnico di Milano. I had never looked at market microstructure before and I wanted to throw myself into it, without big ambitions, just to learn something. I think a hands-on project teaches you much more than going through lecture note after lecture note, and it is also a lot more fun.
